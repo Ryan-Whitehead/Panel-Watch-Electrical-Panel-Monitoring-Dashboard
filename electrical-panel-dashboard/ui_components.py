@@ -343,13 +343,23 @@ def fault_log_table(df: pd.DataFrame) -> None:
 
 def sidebar_controls() -> dict:
     """
-    Render all sidebar controls and return the current user-selected settings.
+    Render all dashboard controls and return the current user-selected settings.
+
+    Controls are rendered in TWO places so they are always reachable:
+      1. ``st.sidebar`` — visible on wide screens / desktop browsers.
+      2. A ``st.expander`` on the main page — always accessible regardless of
+         whether the Streamlit sidebar is collapsed or hidden by the browser.
+
+    Both containers use unique widget keys (suffixed ``_sb`` / ``_ex``) so
+    Streamlit does not raise a DuplicateWidgetID error.  The expander values
+    take precedence: if they differ from the sidebar values, the expander wins.
+    In practice, users will use one or the other, not both simultaneously.
 
     Floor configuration uses a *pending* pattern: the number input writes to
     ``st.session_state.pending_num_floors`` and the "Apply Configuration" button
     must be clicked before the floor change takes effect in ``app.py``.  This
-    prevents an accidental sidebar nudge from silently resetting the building
-    simulator and maintenance queue mid-demo.
+    prevents an accidental nudge from silently resetting the building simulator
+    and maintenance queue mid-demo.
 
     Returns:
         dict with keys:
@@ -368,105 +378,146 @@ def sidebar_controls() -> dict:
     """
     from building_config import DEFAULT_NUM_FLOORS, MAX_FLOORS, MIN_FLOORS
 
+    _active = st.session_state.get("active_num_floors", DEFAULT_NUM_FLOORS)
+
+    # ── Helper: render all widgets into any container ───────────────────────
+    def _render(c, suffix: str) -> dict:
+        """Render all controls into container *c*; suffix makes keys unique."""
+        c.subheader("🏢 Building Configuration")
+        pf = c.number_input(
+            "Number of Floors",
+            min_value=MIN_FLOORS,
+            max_value=MAX_FLOORS,
+            value=_active,
+            step=1,
+            key=f"pending_num_floors_{suffix}",
+            help=(
+                f"Configure floors ({MIN_FLOORS}–{MAX_FLOORS}). "
+                "Panels are redistributed via round-robin. "
+                "Click Apply to confirm — resets sim and maintenance queue."
+            ),
+        )
+        fc = int(pf) != _active
+        if fc:
+            c.warning(
+                f"⚠️ Pending: **{_active} → {int(pf)} floor(s)**\n\n"
+                "Applying resets the Building Simulator and Maintenance Queue. "
+                "Fault log is preserved.",
+                icon=None,
+            )
+        af = c.button(
+            "✅ Apply Configuration",
+            key=f"btn_apply_floors_{suffix}",
+            use_container_width=True,
+            disabled=not fc,
+        )
+
+        c.divider()
+        c.subheader("Simulation")
+        ri = c.slider(
+            "Refresh Interval (s)", min_value=1, max_value=10,
+            value=config.REFRESH_INTERVAL_DEFAULT, step=1,
+            key=f"refresh_{suffix}",
+        )
+        ps = c.checkbox("Pause Simulation", value=False, key=f"pause_{suffix}")
+        hw = c.slider(
+            "Trend History (readings)", min_value=10, max_value=120,
+            value=config.HISTORY_WINDOW, step=5,
+            key=f"history_{suffix}",
+        )
+
+        c.divider()
+        c.subheader("Voltage Thresholds")
+        vw = c.slider(
+            "Warning (%)", min_value=-20, max_value=-5, value=-10, step=1,
+            key=f"v_warn_{suffix}",
+        )
+        vf = c.slider(
+            "Fault (%)", min_value=-25, max_value=-11, value=-15, step=1,
+            key=f"v_fault_{suffix}",
+        )
+
+        c.divider()
+        c.subheader("Current Thresholds (% of rated)")
+        iw = c.slider(
+            "Warning (%)", min_value=100, max_value=120, value=110, step=1,
+            key=f"i_warn_{suffix}",
+        )
+        if_ = c.slider(
+            "Fault (%)", min_value=115, max_value=150, value=125, step=1,
+            key=f"i_fault_{suffix}",
+        )
+
+        c.divider()
+        c.subheader("Power Factor Thresholds")
+        pw = c.slider(
+            "Warning", min_value=0.70, max_value=0.95, value=0.85, step=0.01,
+            key=f"pf_warn_{suffix}",
+        )
+        pff = c.slider(
+            "Fault", min_value=0.60, max_value=0.84, value=0.75, step=0.01,
+            key=f"pf_fault_{suffix}",
+        )
+
+        c.divider()
+        cl = c.button(
+            "🗑️ Clear Fault Log", use_container_width=True, key=f"clear_log_{suffix}",
+        )
+
+        return {
+            "pending_floors": int(pf),
+            "floors_changed": fc,
+            "apply_floors":   af and fc,
+            "refresh":        ri,
+            "pause":          ps,
+            "history":        hw,
+            "v_warn":         vw,
+            "v_fault":        vf,
+            "i_warn":         iw,
+            "i_fault":        if_,
+            "pf_warn":        pw,
+            "pf_fault":       pff,
+            "clear_log":      cl,
+        }
+
+    # ── Sidebar ─────────────────────────────────────────────────────────────
     st.sidebar.title("⚡ Panel Controls")
     st.sidebar.caption("⚠️ **SIMULATED DATA** — not from real sensors or hardware.")
     st.sidebar.divider()
+    sb = _render(st.sidebar, "sb")
 
-    # ── Building Configuration (pending pattern) ────────────────────────────
-    # ``active_num_floors`` lives in session state (set by app.py on first run
-    # and updated only when the Apply button is confirmed).  We read it here so
-    # the number input always reflects the *currently running* floor count as
-    # its default, not the module-level DEFAULT_NUM_FLOORS constant.
-    _active = st.session_state.get("active_num_floors", DEFAULT_NUM_FLOORS)
+    # ── On-page expander (always visible) ───────────────────────────────────
+    with st.expander("⚙️ Dashboard Controls", expanded=False):
+        st.caption("⚠️ **SIMULATED DATA** — not from real sensors or hardware.")
+        ex = _render(st, "ex")
 
-    st.sidebar.subheader("🏢 Building Configuration")
-    pending_floors = st.sidebar.number_input(
-        "Number of Floors",
-        min_value=MIN_FLOORS,
-        max_value=MAX_FLOORS,
-        value=_active,
-        step=1,
-        key="pending_num_floors",
-        help=(
-            f"Configure the number of floors in the simulated building "
-            f"({MIN_FLOORS}–{MAX_FLOORS}). "
-            "The 20 panels are redistributed across the new floor count "
-            "using a round-robin algorithm. "
-            "Click **Apply Configuration** to confirm — changing floors "
-            "resets the simulation and maintenance queue."
-        ),
-    )
+    # ── Merge: expander takes precedence when its Apply button was clicked, ─
+    # otherwise sidebar values are used (desktop users won't open the expander).
+    # For boolean OR-style actions (apply, clear_log) either source can trigger.
+    apply_floors  = sb["apply_floors"]  or ex["apply_floors"]
+    clear_log     = sb["clear_log"]     or ex["clear_log"]
+    pending       = ex["pending_floors"] if ex["apply_floors"] else sb["pending_floors"]
 
-    _floors_changed = int(pending_floors) != _active
-    if _floors_changed:
-        st.sidebar.warning(
-            f"⚠️ Pending change: **{_active} → {int(pending_floors)} floor(s)**\n\n"
-            "Applying will reset the Building Simulator and Maintenance Queue. "
-            "The persistent fault log is preserved.",
-            icon=None,
-        )
-
-    apply_floors = st.sidebar.button(
-        "✅ Apply Configuration",
-        key="btn_apply_floors",
-        use_container_width=True,
-        disabled=not _floors_changed,
-        help=(
-            "Confirm the floor-count change. "
-            "This resets the simulator and maintenance queue."
-        ),
-    )
-
-    st.sidebar.divider()
-    st.sidebar.subheader("Simulation")
-    refresh_interval = st.sidebar.slider(
-        "Refresh Interval (s)", min_value=1, max_value=10,
-        value=config.REFRESH_INTERVAL_DEFAULT, step=1,
-    )
-    pause_simulation = st.sidebar.checkbox("Pause Simulation", value=False)
-    history_window   = st.sidebar.slider(
-        "Trend History (readings)", min_value=10, max_value=120,
-        value=config.HISTORY_WINDOW, step=5,
-    )
-
-    st.sidebar.divider()
-    st.sidebar.subheader("Voltage Thresholds")
-    voltage_warn_pct  = st.sidebar.slider(
-        "Warning Threshold (%)", min_value=-20, max_value=-5, value=-10, step=1,
-    )
-    voltage_fault_pct = st.sidebar.slider(
-        "Fault Threshold (%)", min_value=-25, max_value=-11, value=-15, step=1,
-    )
-
-    st.sidebar.divider()
-    st.sidebar.subheader("Current Thresholds (% of rated)")
-    current_warn_pct  = st.sidebar.slider(
-        "Warning (%)", min_value=100, max_value=120, value=110, step=1,
-    )
-    current_fault_pct = st.sidebar.slider(
-        "Fault (%)", min_value=115, max_value=150, value=125, step=1,
-    )
-
-    st.sidebar.divider()
-    st.sidebar.subheader("Power Factor Thresholds")
-    pf_warn  = st.sidebar.slider(
-        "Warning Threshold", min_value=0.70, max_value=0.95, value=0.85, step=0.01,
-    )
-    pf_fault = st.sidebar.slider(
-        "Fault Threshold", min_value=0.60, max_value=0.84, value=0.75, step=0.01,
-    )
-
-    st.sidebar.divider()
-    clear_log_clicked = st.sidebar.button("🗑️ Clear Fault Log", use_container_width=True)
+    # For sliders, expander wins only if it differs from default (user touched it).
+    # Simplest safe merge: if expander's pause is True, honour it; same for refresh.
+    pause    = sb["pause"]   or ex["pause"]
+    refresh  = min(sb["refresh"],  ex["refresh"])   # use the lower (faster) if either changed
+    history  = max(sb["history"],  ex["history"])   # use the larger window if either changed
+    v_warn   = max(sb["v_warn"],   ex["v_warn"])    # less aggressive threshold wins
+    v_fault  = max(sb["v_fault"],  ex["v_fault"])
+    i_warn   = min(sb["i_warn"],   ex["i_warn"])
+    i_fault  = min(sb["i_fault"],  ex["i_fault"])
+    pf_warn  = max(sb["pf_warn"],  ex["pf_warn"])
+    pf_fault = max(sb["pf_fault"], ex["pf_fault"])
 
     thresholds = {
         "voltage": {
-            "warn_pct":  voltage_warn_pct  / 100.0,
-            "fault_pct": voltage_fault_pct / 100.0,
+            "warn_pct":  v_warn  / 100.0,
+            "fault_pct": v_fault / 100.0,
         },
         "current": {
-            "warn_pct":  current_warn_pct  / 100.0,
-            "fault_pct": current_fault_pct / 100.0,
+            "warn_pct":  i_warn  / 100.0,
+            "fault_pct": i_fault / 100.0,
         },
         "power_factor": {
             "warn":  pf_warn,
@@ -475,13 +526,13 @@ def sidebar_controls() -> dict:
     }
 
     return {
-        "refresh_interval":   refresh_interval,
-        "pause_simulation":   pause_simulation,
-        "history_window":     history_window,
-        "num_floors":         _active,            # currently active (not pending)
-        "apply_floors":       apply_floors and _floors_changed,
-        "pending_num_floors": int(pending_floors),
-        "clear_log":          clear_log_clicked,
+        "refresh_interval":   refresh,
+        "pause_simulation":   pause,
+        "history_window":     history,
+        "num_floors":         _active,
+        "apply_floors":       apply_floors,
+        "pending_num_floors": pending,
+        "clear_log":          clear_log,
         "thresholds":         thresholds,
     }
 
