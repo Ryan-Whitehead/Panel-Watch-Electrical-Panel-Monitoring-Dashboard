@@ -350,16 +350,36 @@ def sidebar_controls() -> dict:
             refresh_interval   (int, seconds)
             pause_simulation   (bool)
             history_window     (int, readings)
+            num_floors         (int, 1–50)
             clear_log          (bool, True if button was clicked this run)
             thresholds         (dict matching config.THRESHOLDS structure)
                 voltage:   {warn_pct, fault_pct}  — fractional multipliers
                 current:   {warn_pct, fault_pct}  — multipliers of rated I
                 power_factor: {warn, fault}         — absolute PF values
     """
+    from building_config import DEFAULT_NUM_FLOORS, MAX_FLOORS, MIN_FLOORS
+
     st.sidebar.title("⚡ Panel Controls")
     st.sidebar.caption("⚠️ **SIMULATED DATA** — not from real sensors or hardware.")
     st.sidebar.divider()
 
+    st.sidebar.subheader("🏢 Building Configuration")
+    num_floors = st.sidebar.number_input(
+        "Number of Floors",
+        min_value=MIN_FLOORS,
+        max_value=MAX_FLOORS,
+        value=DEFAULT_NUM_FLOORS,
+        step=1,
+        help=(
+            f"Configure the number of floors in the simulated building "
+            f"({MIN_FLOORS}–{MAX_FLOORS}). "
+            "The 20 panels are redistributed across the new floor count "
+            "using a round-robin algorithm. "
+            "Changing floors resets the simulation and maintenance queue."
+        ),
+    )
+
+    st.sidebar.divider()
     st.sidebar.subheader("Simulation")
     refresh_interval = st.sidebar.slider(
         "Refresh Interval (s)", min_value=1, max_value=10,
@@ -420,6 +440,7 @@ def sidebar_controls() -> dict:
         "refresh_interval": refresh_interval,
         "pause_simulation": pause_simulation,
         "history_window":   history_window,
+        "num_floors":       int(num_floors),
         "clear_log":        clear_log_clicked,
         "thresholds":       thresholds,
     }

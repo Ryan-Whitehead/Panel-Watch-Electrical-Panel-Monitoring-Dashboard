@@ -1,4 +1,4 @@
-# PanelWatch — Building Electrical Monitoring Dashboard
+# PanelWatch — Technical Reference
 
 > **All sensor readings are SIMULATED by a probabilistic noise model.**
 > This project does not interface with real electrical hardware or control any physical equipment.
@@ -9,20 +9,21 @@ Built for the **IBM Bob Hackathon 2026** by Ryan Whitehead.
 
 ## 1. Project Overview
 
-PanelWatch is a building-wide SCADA-style electrical monitoring dashboard built with **Streamlit**, **Plotly**, and **Python**. It simulates **20 independent 277/480 V 3-phase panels** distributed across 12 floors of a commercial building, enabling a maintenance technician (Richie) to monitor the entire building's electrical health from a single screen.
+PanelWatch is a building-wide SCADA-style electrical monitoring dashboard built with **Streamlit**, **Plotly**, and **Python**. It simulates **20 independent 277/480 V 3-phase panels** distributed across a **configurable number of floors** (default 12, range 1–50), enabling building maintenance personnel to monitor the entire electrical health of a simulated building from a single screen.
 
 **Key features:**
 
 - **Building Overview** — 20-panel status grid with floor filter, search, and status heat-map
-- **3-Phase Bus** — live per-phase voltage, current, power factor, and power triangle for a selected panel
+- **Configurable Floor Count** — sidebar slider changes the number of floors (1–50); panels are redistributed automatically using a round-robin algorithm
+- **3-Phase Bus** — live per-phase voltage, current, power factor, and power triangle
 - **Circuit Breakdown** — 8 configurable branch circuits with load bars and trend charts
-- **Fault Simulation** — deterministic fault injection (overcurrent, undervoltage, low PF) per panel; includes a Richie's Demo scenario that walks through a realistic multi-panel incident
-- **Maintenance Queue** — rule-based priority queue (HIGH / MEDIUM / LOW) with acknowledge, notes, and resolve workflow
+- **Fault Simulation** — Demo Mode toggle (suppresses random background faults); 6-step Guided Maintenance Demonstration; manual per-panel injection (overcurrent, undervoltage, low PF)
+- **Maintenance Queue** — rule-based priority queue (HIGH / MEDIUM / LOW) with acknowledge, notes, resolve, and CSV report export
 - **Analytics** — fault trend, fault-by-category, and fault-by-panel charts from the persistent log
 - **Fault Log** — timestamped CSV log of every fault event, survives browser reloads
-- Accurate energy accumulation using monotonic elapsed-time measurement
+- Accurate energy accumulation using `time.monotonic()` elapsed-time measurement
 - Auto-refreshing SCADA-style dashboard via `st.rerun` loop (configurable interval)
-- 207-test pytest suite covering calculations, fault detection, building model, and maintenance queue
+- **333-test pytest suite** covering calculations, fault detection, building model, maintenance queue, demo mode, report generation, and floor configuration
 
 ---
 
@@ -157,8 +158,11 @@ electrical-panel-dashboard/
 +-- app.py                       Streamlit entry point (7 tabs, building-wide)
 +-- config.py                    Constants, thresholds, BUILDING_PANELS registry
 +-- building.py                  PanelDefinition, PanelState, registry helpers
-+-- building_simulator.py        BuildingSimulator — 20-panel independent sim engine
++-- building_config.py           distribute_panels(), active_floors(), floor constants
++-- building_simulator.py        BuildingSimulator — accepts custom panel list
 +-- maintenance.py               MaintenanceItem, MaintenanceQueue, priority rules
++-- demo_mode.py                 DemoState, build_demo_steps(), reset/advance helpers
++-- report_generator.py          generate_maintenance_csv() — structured CSV report
 +-- simulator.py                 Single-panel probabilistic generator (SIMULATED)
 +-- calculations.py              Pure EE math functions (no Streamlit dependency)
 +-- fault_detector.py            Stateless fault classification; FaultEvent dataclass
@@ -167,11 +171,14 @@ electrical-panel-dashboard/
 +-- data/
 |   +-- .gitkeep
 +-- tests/
-|   +-- test_calculations.py     Unit tests for EE formulas (56 tests)
-|   +-- test_energy_accumulation.py  Unit tests for energy accumulation (13 tests)
-|   +-- test_fault_detector.py   Unit tests for fault classification (29 tests)
-|   +-- test_building.py         Unit tests for building model (47 tests)
-|   +-- test_maintenance.py      Unit tests for maintenance queue (62 tests)
+|   +-- test_calculations.py         EE formula unit tests (56 tests)
+|   +-- test_energy_accumulation.py  Energy accumulation unit tests (13 tests)
+|   +-- test_fault_detector.py       Fault classification unit tests (29 tests)
+|   +-- test_building.py             Building model unit tests (47 tests)
+|   +-- test_maintenance.py          Maintenance queue unit tests (62 tests)
+|   +-- test_demo_mode.py            Demo mode unit tests (38 tests)
+|   +-- test_report_generator.py     Report generation unit tests (38 tests)
+|   +-- test_building_config.py      Floor configuration unit tests (50 tests)
 +-- .coveragerc                  pytest-cov config
 +-- ruff.toml                    Linter config (E/F/I rules, target py310)
 +-- requirements.txt             Pinned dependencies
@@ -180,27 +187,72 @@ electrical-panel-dashboard/
 
 ---
 
-## 10. Richie's Demo Walkthrough
+## 10. Configurable Building Floors
 
-This walkthrough shows a first-time reviewer (or interviewer) the full building-monitoring workflow in under 5 minutes.
+### How It Works
 
-1. **Open the app** — `streamlit run app.py` → **Building Overview** tab loads automatically.
-2. **Observe the grid** — 20 panel cards show NORMAL (green). Note the floor filter and search box.
-3. **Go to Fault Simulation tab** → expand **"Richie's Demo Scenario"** and click **"Run Richie's Demo"**.
-   - P-07 gets an OVERCURRENT injection; P-09 gets an UNDERVOLTAGE injection.
-   - Within one or two refresh ticks the Building Overview grid shows two FAULT cards.
-4. **Back to Building Overview** — filter by status = FAULT; only the two affected panels appear.
-5. **Click through to a FAULT panel's card** → the 3-Phase Bus tab shows the three phases all in the fault band.
-6. **Maintenance Queue tab** — two HIGH-priority items appear automatically (one per fault type per panel).
-   - Acknowledge P-07's overcurrent item; add a technician note (e.g. "Checked breaker, scheduling load review").
-7. **Click "Clear Injections"** in Fault Simulation — panels return to NORMAL after the next tick.
-8. **Back to Maintenance Queue** — items drop to LOW priority (resolved). Mark them as Reviewed, then Clear Resolved.
-9. **Analytics tab** — fault trend chart shows the spike; fault-by-category bar confirms "current" and "voltage" event counts.
-10. **Fault Log tab** — raw CSV rows show every event with timestamps.
+The **Building Configuration** section in the sidebar contains a **Number of Floors** input (range 1–50, default 12).
+
+When changed:
+1. `building_config.distribute_panels()` remaps the 20 panels to the new floor count using a **round-robin algorithm**: panel *i* (0-indexed) → floor `(i % num_floors) + 1`.
+2. A new `BuildingSimulator` is created with the remapped panel list.
+3. The `MaintenanceQueue` is reset.
+4. The Guided Maintenance Demonstration selects the first panel in the new registry as its target automatically.
+5. Floor filters in Building Overview and Maintenance Queue are updated to show only occupied floors.
+6. The persistent `fault_log.csv` is **not** erased — historical events retain the floor assignment recorded at the time of the event.
+
+### Panel Distribution Examples
+
+| Floors | Panels/floor | Notes |
+|--------|-------------|-------|
+| 1 | 20 | All panels on Floor 1 |
+| 5 | 4 | Even distribution |
+| 10 | 2 | Even distribution |
+| 12 (default) | 1–2 | Floors 1–8 get 2, floors 9–12 get 1 |
+| 20 | 1 | One panel per floor |
+| 25 | 0–1 | Floors 1–20 have 1, floors 21–25 empty |
+| 50 | 0–1 | Floors 1–20 have 1, floors 21–50 empty |
 
 ---
 
-## 11. Assumptions and Limitations
+## 11. Demo Mode and Guided Maintenance Demonstration
+
+### Demo Mode
+
+The **Fault Simulation** tab has a **Demo Mode toggle** at the top. When enabled:
+- The 4 % random background fault probability is **suppressed**.
+- Only manually injected faults (or the guided scenario) trigger fault conditions.
+- Normal Gaussian measurement noise continues so readings look realistic.
+- The **Reset Demo Environment** button clears all injections, resets the Maintenance Queue, and returns to Step 1 — without erasing the persistent `fault_log.csv`.
+
+### 6-Step Guided Maintenance Demonstration
+
+The demonstration works with **any configured floor count** — the target panel is selected dynamically from the first panel in the current registry.
+
+1. **Normal Operation** — Click ▶ Next Step. All injections are cleared. All panels are NORMAL.
+2. **Inject Overcurrent** — Click ▶ Next Step. The demonstration panel receives an overcurrent injection. Switch to 🏢 Building Overview and watch it turn FAULT (red) within one refresh tick.
+3. **Fault Classification** — Switch to 🛠️ Maintenance Queue. A HIGH-priority item for `{panel_id}::current` appears automatically showing measured current, rated current, and fault threshold.
+4. **Acknowledge Fault** — Select the item in the Acknowledge dropdown. Add a note (e.g. *"Checked breaker — scheduling load review"*). Click ✅ Acknowledge. The electrical fault condition is NOT cleared.
+5. **Restore Normal** — Click ▶ Next Step. The injection is cleared. The panel returns to NORMAL and the maintenance item drops to LOW priority (resolved).
+6. **Review History** — The maintenance record retains the acknowledgement timestamp and technician note. Click **⬇️ Download Maintenance Report (CSV)** to export a full structured report.
+
+---
+
+## 12. Maintenance Report Export
+
+The **Maintenance Queue** tab has an **Export Maintenance Report** section that generates a structured CSV report containing:
+
+- Disclaimer (required by the project — not a certified safety system)
+- Report title, generation timestamp, building name and voltage
+- Panel status summary (total / NORMAL / WARNING / FAULT counts)
+- Maintenance queue summary (HIGH / MEDIUM / LOW counts)
+- One data row per item with 18 fields: item ID, panel ID, floor, location, fault category, electrical condition, severity, measured value, unit, threshold, maintenance priority, workflow status, acknowledged-at timestamp, technician notes, first detected, latest detected, resolved-at, and injected-fault flag
+
+Active faults and resolved faults are distinguished by the **Electrical Condition** column (`FAULT`/`WARNING` = active, `NORMAL` = resolved). Acknowledging an alert is tracked separately in **Workflow Status** — it does not change the electrical condition.
+
+---
+
+## 13. Assumptions and Limitations
 
 1. **Sinusoidal steady-state** — formulas assume pure 60 Hz sinusoids; no harmonic distortion modeled.
 2. **Displacement PF only** — PF = cos(theta), not true power factor. VFDs and switching supplies produce harmonics that reduce true PF below displacement PF.
@@ -213,7 +265,7 @@ This walkthrough shows a first-time reviewer (or interviewer) the full building-
 
 ---
 
-## 12. Interview Prep Notes
+## 14. Interview Prep Notes
 
 **Why sum per phase instead of using the balanced formula?**
 The balanced formula `P = sqrt(3) x V_LL x I_L x PF` assumes identical conditions on all three phases. The simulator adds independent Gaussian noise to each phase, creating small imbalances. Summing per-phase contributions (`P_total = P_A + P_B + P_C`) is always accurate regardless of load balance. Real power quality analyzers always use per-phase summation.

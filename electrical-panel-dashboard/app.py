@@ -6,7 +6,7 @@ Tabs
 0  Building Overview     — 20-panel status grid, floor map, panel selector
 1  ⚡ 3-Phase Bus         — existing single-panel 3-phase monitoring (unchanged)
 2  🔌 Circuit Breakdown   — existing 8-circuit breakdown (unchanged)
-3  🔧 Fault Simulation    — interactive fault injection + Richie's demo scenario
+3  🔧 Fault Simulation    — interactive fault injection + guided demo scenario
 4  🛠  Maintenance Queue   — priority queue, acknowledge, notes, resolve
 5  📊 Analytics           — fault trend charts from the persistent log
 6  🚨 Fault Log           — existing raw fault event table (unchanged)
@@ -22,6 +22,11 @@ import streamlit as st
 
 import config
 from building import building_summary
+from building_config import (
+    active_floors,
+    distribute_panels,
+    panel_ids_for_demo,
+)
 from building_simulator import BuildingSimulator
 from calculations import (
     accumulate_energy_tick,
@@ -32,9 +37,17 @@ from calculations import (
     sum_phase_power,
     voltage_deviation_pct,
 )
+from demo_mode import (
+    DemoState,
+    advance_step,
+    build_demo_steps,
+    reset_demo_state,
+    set_demo_mode,
+)
 from fault_detector import detect_faults_batch
 from logger import append_faults, clear_log, fault_counts, load_recent
 from maintenance import MaintenanceQueue
+from report_generator import generate_maintenance_csv
 from simulator import SimulatorHistory, generate_circuit_readings, generate_phase_readings
 from ui_components import (
     analytics_fault_trend,
@@ -120,8 +133,40 @@ if "maint_queue" not in st.session_state:
     st.session_state.maint_queue = MaintenanceQueue()
 if "selected_panel" not in st.session_state:
     st.session_state.selected_panel = "P-01"
-if "demo_step" not in st.session_state:
-    st.session_state.demo_step = 0   # tracks Richie's demo scenario step
+if "demo_state" not in st.session_state:
+    st.session_state.demo_state = DemoState()
+if "active_num_floors" not in st.session_state:
+    st.session_state.active_num_floors = settings["num_floors"]
+
+# ---------------------------------------------------------------------------
+# Floor configuration change detection
+# ---------------------------------------------------------------------------
+
+_requested_floors = settings["num_floors"]
+_active_floors    = st.session_state.active_num_floors
+
+if _requested_floors != _active_floors:
+    # Distribute panels across the new floor count and rebuild the simulator.
+    _new_panels = distribute_panels(config.BUILDING_PANELS, _requested_floors)
+    st.session_state.building_sim  = BuildingSimulator(_new_panels)
+    st.session_state.maint_queue   = MaintenanceQueue()
+    # Update the demo panel to the first panel in the new registry.
+    _new_demo_pid = panel_ids_for_demo(_new_panels)
+    st.session_state.demo_state    = DemoState(
+        demo_mode_active=st.session_state.demo_state.demo_mode_active,
+        demo_panel_id=_new_demo_pid,
+    )
+    # Keep selected panel valid.
+    if st.session_state.selected_panel not in st.session_state.building_sim.registry:
+        st.session_state.selected_panel = _new_demo_pid
+    st.session_state.active_num_floors = _requested_floors
+    st.info(
+        f"🏢 Building reconfigured to **{_requested_floors} floor(s)**. "
+        "Simulation and maintenance queue have been reset. "
+        "Persistent fault log is preserved."
+    )
+
+_num_floors = st.session_state.active_num_floors
 
 # ---------------------------------------------------------------------------
 # Page header
@@ -129,7 +174,8 @@ if "demo_step" not in st.session_state:
 
 st.title("⚡ PanelWatch — Building Electrical Monitoring")
 st.caption(
-    "📍 Commercial Building · 12 Floors · 20 Panels · 277/480 V 3Φ | 60 Hz  "
+    f"📍 Simulated Building · {_num_floors} Floor(s) · "
+    f"{len(config.BUILDING_PANELS)} Panels · 277/480 V 3Φ | 60 Hz  "
     "| ⚠️ **SIMULATED DATA** — not from real sensors or hardware"
 )
 
@@ -225,9 +271,11 @@ circuit_status = {cr["circuit_name"]: _worst_status(cr["circuit_name"]) for cr i
 # ---------------------------------------------------------------------------
 
 if not settings["pause_simulation"]:
+    _demo_mode_active = st.session_state.demo_state.demo_mode_active
     building_faults = st.session_state.building_sim.step(
         paused=False,
         thresholds=settings["thresholds"],
+        demo_mode=_demo_mode_active,
     )
     # Append building-wide faults to the persistent CSV log.
     if building_faults:
@@ -268,8 +316,11 @@ with tab_overview:
     # Panel search / filter
     st.subheader("Panel List")
     search_term = st.text_input("Search panels (ID or location):", value="", key="panel_search")
+    _floor_options = active_floors(
+        [{"floor": ps.definition.floor} for ps in bsim.registry.values()]
+    )
     floor_filter = st.selectbox(
-        "Filter by floor:", ["All"] + [str(f) for f in range(1, 13)], key="floor_filter"
+        "Filter by floor:", ["All"] + [str(f) for f in _floor_options], key="floor_filter"
     )
     status_filter = st.selectbox(
         "Filter by status:", ["All", "NORMAL", "WARNING", "FAULT"], key="status_filter"
@@ -492,107 +543,167 @@ with tab_circuits:
 # ── Tab 3 — Fault Simulation ────────────────────────────────────────────────
 with tab_fault_sim:
     st.subheader("🔧 Fault Simulation Control Center")
-    st.caption("⚠️ SIMULATED faults only — this does not affect real electrical equipment.")
+    st.info(
+        "⚠️ **SIMULATED DATA** — All fault injections affect only the software simulation. "
+        "This dashboard does not connect to or control real electrical equipment."
+    )
 
     bsim_ref = st.session_state.building_sim
+    _ds = st.session_state.demo_state
 
-    # --- Manual injection ---
-    st.markdown("#### Manual Fault Injection")
-    inj_col1, inj_col2, inj_col3 = st.columns(3)
-    with inj_col1:
-        inj_panel = st.selectbox(
-            "Target panel:",
-            [p["panel_id"] for p in config.BUILDING_PANELS],
-            key="inj_panel",
+    # ----------------------------------------------------------------
+    # Demo Mode toggle — prominent at the top
+    # ----------------------------------------------------------------
+    st.markdown("#### 🎬 Demo Mode")
+    demo_col1, demo_col2 = st.columns([2, 1])
+    with demo_col1:
+        new_demo_active = st.toggle(
+            "Enable Demo Mode (suppresses random background faults)",
+            value=_ds.demo_mode_active,
+            key="demo_mode_toggle",
+            help=(
+                "When ON, the 4 % random background fault probability is suppressed "
+                "so only manually injected faults appear. Normal Gaussian measurement "
+                "noise continues. All data remains SIMULATED."
+            ),
         )
-    with inj_col2:
-        inj_scenario = st.selectbox(
-            "Fault scenario:",
-            ["overcurrent", "undervoltage", "low_power_factor"],
-            key="inj_scenario",
+    if new_demo_active != _ds.demo_mode_active:
+        st.session_state.demo_state = set_demo_mode(_ds, new_demo_active)
+        st.rerun()
+
+    if st.session_state.demo_state.demo_mode_active:
+        st.success(
+            "🎬 **Demo Mode ACTIVE** — background random faults suppressed. "
+            "Only manual injections will trigger fault conditions."
         )
-    with inj_col3:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("💥 Inject Fault", use_container_width=True, key="btn_inject"):
-            bsim_ref.inject_fault(inj_panel, inj_scenario)
-            st.success(f"Injected {inj_scenario} into {inj_panel}. Next tick will show the fault.")
 
-    if st.button("🔄 Clear All Injected Faults", key="btn_clear_inject"):
-        bsim_ref.clear_all_injections()
-        st.success("All injected faults cleared. Panels returning to normal simulation.")
-
-    # Show currently active injections.
-    active_injections = [
-        (pid, ps.injected_scenario)
-        for pid, ps in bsim_ref.registry.items()
-        if ps.injected_scenario is not None
-    ]
-    if active_injections:
-        st.markdown("**Active injections:**")
-        for pid, sc in active_injections:
-            st.markdown(f"- **{pid}** → `{sc}`")
-    else:
-        st.info("No active fault injections.")
+    with demo_col2:
+        if st.button(
+            "🔄 Reset Demo Environment",
+            key="btn_reset_demo_env",
+            help=(
+                "Clears all fault injections, resets the Maintenance Queue, "
+                "and returns the demo to Step 1. "
+                "The persistent fault_log.csv is NOT erased."
+            ),
+        ):
+            bsim_ref.clear_all_injections()
+            st.session_state.maint_queue = MaintenanceQueue()
+            st.session_state.demo_state = reset_demo_state()
+            st.success(
+                "Demo environment reset. Fault injections cleared, Maintenance Queue "
+                "reset to empty. Persistent fault log preserved."
+            )
 
     st.divider()
 
-    # --- Richie's Demo Scenario ---
-    st.markdown("#### 🎬 Richie's Maintenance Scenario (Guided Demo)")
-    st.markdown(
-        """
-        This repeatable scenario demonstrates the full monitoring workflow:
-        1. Start with all panels operating normally.
-        2. Inject an overcurrent fault into **P-07** (Floor 5, Laboratory Suite A).
-        3. Observe the fault on the Building Overview.
-        4. View the Maintenance Queue update.
-        5. Acknowledge the alert and add a note.
-        6. Clear the fault and restore normal operation.
-        7. Confirm the event remains in the Maintenance Queue history.
-        """
+    # ----------------------------------------------------------------
+    # Guided Maintenance Demonstration
+    # ----------------------------------------------------------------
+    st.markdown("#### 🧰 Guided Maintenance Demonstration")
+    st.caption(
+        "A repeatable 6-step walkthrough demonstrating the full monitoring and "
+        "maintenance workflow. Enable Demo Mode above for a clean, distraction-free run."
     )
 
-    demo_step = st.session_state.demo_step
-    demo_labels = [
-        "Step 1 — Clear all faults and start fresh",
-        "Step 2 — Inject overcurrent on P-07 (Floor 5)",
-        "Step 3 — Fault active: check Building Overview + Maintenance Queue",
-        "Step 4 — Acknowledge alert in Maintenance Queue tab",
-        "Step 5 — Clear the injection (restore normal operation)",
-        "Step 6 — Demo complete: check Maintenance Queue history",
-    ]
-    st.info(f"**Current step ({demo_step + 1}/6):** {demo_labels[demo_step]}")
+    _ds = st.session_state.demo_state   # re-read after possible toggle update
+    _demo_pid = _ds.demo_panel_id
+    # Ensure demo panel is valid in the current registry.
+    if _demo_pid not in bsim_ref.registry:
+        _demo_pid = next(iter(bsim_ref.registry))
+        st.session_state.demo_state = DemoState(
+            step=_ds.step,
+            demo_mode_active=_ds.demo_mode_active,
+            demo_panel_id=_demo_pid,
+        )
+        _ds = st.session_state.demo_state
+
+    _demo_defn = bsim_ref.registry[_demo_pid].definition
+    _demo_label = f"Floor {_demo_defn.floor} — {_demo_defn.location}"
+    _step_info = build_demo_steps(_demo_pid, _demo_label)[_ds.step]
+
+    # Progress bar
+    st.progress((_ds.step) / 5, text=_ds.progress_label)
+    st.info(f"**{_step_info['label']}**\n\n{_step_info['instruction']}")
+    st.caption(f"Demo target panel: **{_demo_pid}** · {_demo_label}")
 
     demo_btns = st.columns(3)
     with demo_btns[0]:
-        if st.button("▶ Next demo step", key="demo_next"):
-            if demo_step == 0:
+        btn_label = "▶ Next Step" if not _ds.is_complete else "✅ Demo Complete"
+        if st.button(btn_label, key="demo_next", disabled=_ds.is_complete):
+            action = _step_info["action"]
+            if action == "clear_injections":
                 bsim_ref.clear_all_injections()
-                st.success("All faults cleared. Dashboard reset.")
-            elif demo_step == 1:
-                bsim_ref.inject_fault("P-07", "overcurrent")
-                st.success("Overcurrent injected on P-07. Check Building Overview.")
-            elif demo_step == 2:
-                st.info("Navigate to 🏢 Building Overview or 🛠️ Maintenance Queue to see the fault.")
-            elif demo_step == 3:
-                st.info("Go to the 🛠️ Maintenance Queue tab, find P-07 and click Acknowledge.")
-            elif demo_step == 4:
-                bsim_ref.clear_injection("P-07")
-                st.success("P-07 fault injection cleared. Electrical condition normalising.")
-            elif demo_step == 5:
-                st.success("Demo complete! The event remains in the Maintenance Queue (LOW priority).")
-            st.session_state.demo_step = min(demo_step + 1, 5)
+            elif action == "inject_overcurrent":
+                bsim_ref.inject_fault(_demo_pid, "overcurrent")
+            elif action == "clear_injection":
+                bsim_ref.clear_injection(_demo_pid)
+            st.session_state.demo_state = advance_step(_ds)
+            st.rerun()
 
     with demo_btns[1]:
-        if st.button("⏮ Reset demo", key="demo_reset"):
+        if st.button("⏮ Reset to Step 1", key="demo_reset"):
             bsim_ref.clear_all_injections()
-            st.session_state.demo_step = 0
-            st.success("Demo reset.")
+            st.session_state.demo_state = DemoState(
+                demo_mode_active=_ds.demo_mode_active,
+                demo_panel_id=_demo_pid,
+            )
+            st.rerun()
+
+    st.divider()
+
+    # ----------------------------------------------------------------
+    # Manual Fault Injection (advanced / freeform)
+    # ----------------------------------------------------------------
+    with st.expander("⚙️ Manual Fault Injection (Advanced)", expanded=False):
+        st.caption(
+            "Inject any fault scenario into any panel independently of the guided demo."
+        )
+        inj_col1, inj_col2, inj_col3 = st.columns(3)
+        with inj_col1:
+            inj_panel = st.selectbox(
+                "Target panel:",
+                [p["panel_id"] for p in config.BUILDING_PANELS],
+                key="inj_panel",
+            )
+        with inj_col2:
+            inj_scenario = st.selectbox(
+                "Fault scenario:",
+                ["overcurrent", "undervoltage", "low_power_factor"],
+                key="inj_scenario",
+            )
+        with inj_col3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("💥 Inject Fault", use_container_width=True, key="btn_inject"):
+                bsim_ref.inject_fault(inj_panel, inj_scenario)
+                st.success(
+                    f"Injected **{inj_scenario}** into **{inj_panel}**. "
+                    "The fault will appear on the next simulation tick."
+                )
+
+        if st.button("🔄 Clear All Injected Faults", key="btn_clear_inject"):
+            bsim_ref.clear_all_injections()
+            st.success("All injected faults cleared. Panels returning to normal simulation.")
+
+        # Show currently active injections.
+        active_injections = [
+            (pid, ps.injected_scenario)
+            for pid, ps in bsim_ref.registry.items()
+            if ps.injected_scenario is not None
+        ]
+        if active_injections:
+            st.markdown("**Active injections:**")
+            for pid, sc in active_injections:
+                st.markdown(f"- **{pid}** → `{sc}`")
+        else:
+            st.info("No active fault injections.")
 
 # ── Tab 4 — Maintenance Queue ───────────────────────────────────────────────
 with tab_maint:
     st.subheader("🛠️ Maintenance Priority Queue")
     st.caption(
         "Prioritisation is rule-based (FAULT=HIGH, WARNING=MEDIUM, Resolved=LOW). "
+        "Acknowledging an alert does NOT resolve the electrical fault. "
         "This is a decision-support tool — not a certified safety assessment."
     )
 
@@ -615,7 +726,13 @@ with tab_maint:
     # Filters
     mf1, mf2, mf3, mf4 = st.columns(4)
     with mf1:
-        mf_floor = st.selectbox("Floor:", ["All"] + [str(f) for f in range(1, 13)], key="mf_floor")
+        _mq_floor_opts = active_floors(
+            [{"floor": ps.definition.floor}
+             for ps in st.session_state.building_sim.registry.values()]
+        )
+        mf_floor = st.selectbox(
+            "Floor:", ["All"] + [str(f) for f in _mq_floor_opts], key="mf_floor"
+        )
     with mf2:
         mf_panel = st.selectbox(
             "Panel:", ["All"] + [p["panel_id"] for p in config.BUILDING_PANELS], key="mf_panel"
@@ -642,37 +759,72 @@ with tab_maint:
     maintenance_table(sorted_items)
 
     st.divider()
-    st.subheader("Acknowledge / Add Note")
+
+    # Quick-action callout
+    st.markdown("##### ✏️ Acknowledge / Add Note / Review")
+    st.caption(
+        "Select an item from the dropdown, optionally add a note, "
+        "then click an action button. "
+        "Acknowledging records who saw the alert — it does not clear the electrical fault."
+    )
 
     all_item_ids = [i.item_id for i in mq.all_items()]
     if all_item_ids:
         ack_item_id = st.selectbox("Select item:", all_item_ids, key="ack_select")
-        ack_note = st.text_input("Add note (optional):", key="ack_note")
+        ack_note = st.text_input("Add note (optional):", key="ack_note",
+                                 placeholder="e.g. Checked breaker — scheduling load review")
         ac1, ac2, ac3 = st.columns(3)
         with ac1:
-            if st.button("✅ Acknowledge", key="btn_ack"):
+            if st.button("✅ Acknowledge", key="btn_ack", use_container_width=True):
                 try:
                     mq.acknowledge(ack_item_id)
                     if ack_note.strip():
                         mq.add_note(ack_item_id, ack_note.strip())
-                    st.success(f"Acknowledged {ack_item_id}.")
+                    st.success(f"Acknowledged **{ack_item_id}**. Electrical condition unchanged.")
                 except KeyError as e:
                     st.error(str(e))
         with ac2:
-            if st.button("📋 Mark Reviewed", key="btn_reviewed"):
+            if st.button("📋 Mark Reviewed", key="btn_reviewed", use_container_width=True):
                 try:
                     mq.mark_reviewed(ack_item_id)
                     if ack_note.strip():
                         mq.add_note(ack_item_id, ack_note.strip())
-                    st.success(f"Marked {ack_item_id} as reviewed.")
+                    st.success(f"Marked **{ack_item_id}** as reviewed.")
                 except KeyError as e:
                     st.error(str(e))
         with ac3:
-            if st.button("🗑️ Clear Resolved+Reviewed", key="btn_clear_resolved"):
+            if st.button("🗑️ Clear Resolved+Reviewed", key="btn_clear_resolved",
+                         use_container_width=True):
                 removed = mq.clear_resolved()
                 st.success(f"Removed {removed} resolved+reviewed items.")
     else:
-        st.info("No maintenance items yet.")
+        st.info("No maintenance items yet. Faults detected during simulation will appear here.")
+
+    st.divider()
+
+    # ── Maintenance Report Export ──────────────────────────────────────────
+    st.markdown("##### 📥 Export Maintenance Report")
+    st.caption(
+        "Generates a structured CSV report of all maintenance items — active and resolved. "
+        "Includes the full disclaimer, building summary, and all 15 tracked fields per item."
+    )
+
+    _bsummary_for_report = building_summary(st.session_state.building_sim.registry)
+    _report_csv = generate_maintenance_csv(
+        queue=mq,
+        building_summary=_bsummary_for_report,
+        generated_at=datetime.now(),
+    )
+    _report_filename = (
+        f"panelwatch_maintenance_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    )
+    st.download_button(
+        label="⬇️ Download Maintenance Report (CSV)",
+        data=_report_csv,
+        file_name=_report_filename,
+        mime="text/csv",
+        use_container_width=True,
+    )
 
 # ── Tab 5 — Analytics ───────────────────────────────────────────────────────
 with tab_analytics:

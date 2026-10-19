@@ -154,8 +154,18 @@ class BuildingSimulator:
         Live state keyed by panel_id.  Initialised from config.BUILDING_PANELS.
     """
 
-    def __init__(self) -> None:
-        self.registry: dict = build_registry(config.BUILDING_PANELS)
+    def __init__(self, panels: Optional[list] = None) -> None:
+        """
+        Parameters
+        ----------
+        panels : list[dict] | None
+            Panel definition list to use.  When None (default), uses
+            config.BUILDING_PANELS.  Pass a list from
+            building_config.distribute_panels() to use a custom floor layout.
+        """
+        if panels is None:
+            panels = config.BUILDING_PANELS
+        self.registry: dict = build_registry(panels)
 
     # ------------------------------------------------------------------
     # Fault injection control
@@ -206,6 +216,7 @@ class BuildingSimulator:
         self,
         paused: bool,
         thresholds: dict,
+        demo_mode: bool = False,
     ) -> list:
         """
         Advance every panel by one simulation tick.
@@ -225,6 +236,11 @@ class BuildingSimulator:
             This matches the single-panel behaviour in app.py.
         thresholds : dict
             Threshold dict (config.THRESHOLDS or sidebar overrides).
+        demo_mode : bool
+            When True, suppresses the 4 % background probabilistic fault
+            injection so only manually injected faults appear.  Normal
+            Gaussian measurement noise is still applied so readings look
+            realistic.  Default False (production behaviour unchanged).
 
         Returns
         -------
@@ -249,8 +265,9 @@ class BuildingSimulator:
                     fault_scenario = FaultScenario(panel_state.injected_scenario)
                 except ValueError:
                     fault_scenario = None
-            else:
+            elif not demo_mode:
                 # Background probabilistic fault injection (4% probability).
+                # Suppressed when demo_mode=True to keep the demo deterministic.
                 if float(np.random.random()) < config.FAULT_INJECT_PROBABILITY:
                     fault_scenario = FaultScenario(
                         np.random.choice([
