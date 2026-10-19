@@ -228,7 +228,6 @@ def trend_chart(
         xaxis={"showgrid": False, "tickfont": {"color": "#8892a4", "size": 10}},
         yaxis={
             "title": y_label,
-            "titlefont": {"color": "#8892a4", "size": 11},
             "tickfont": {"color": "#8892a4", "size": 10},
             "gridcolor": "#2a3040",
         },
@@ -296,7 +295,6 @@ def circuit_bar_chart(circuit_df: pd.DataFrame) -> go.Figure:
             "title": "Load (%)",
             "range": [0, max(150, circuit_df["load_pct"].max() * 1.2) if not circuit_df.empty else 150],
             "tickfont": {"color": "#8892a4", "size": 10},
-            "titlefont": {"color": "#8892a4"},
             "gridcolor": "#2a3040",
         },
         yaxis={"tickfont": {"color": "#e8eaf0", "size": 11}},
