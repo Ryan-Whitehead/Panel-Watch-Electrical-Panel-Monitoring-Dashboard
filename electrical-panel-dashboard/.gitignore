@@ -28,8 +28,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Streamlit
+# Streamlit -- ignore secrets but track config.toml
 .streamlit/secrets.toml
+!.streamlit/config.toml
 
 # Generated data (fault log regenerates at runtime)
 data/fault_log.csv

@@ -1,0 +1,14 @@
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+showSidebarNavigation = true
+
+[theme]
+base = "dark"
+
+[ui]
+hideTopBar = false
