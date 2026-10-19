@@ -18,13 +18,12 @@ import streamlit as st
 
 import config
 from calculations import (
+    accumulate_energy_tick,
     apparent_power,
-    energy_kwh,
     load_percentage,
     reactive_power,
     real_power,
     sum_phase_power,
-    three_phase_power,
     voltage_deviation_pct,
 )
 from fault_detector import detect_faults_batch
@@ -168,29 +167,18 @@ total_S_VA = bus_totals["S_total"]
 total_Q_VAR = bus_totals["Q_total"]
 agg_pf     = bus_totals["PF_agg"]
 
-# Energy accumulation — uses actual elapsed wall-clock time so that
-# variable execution time and paused periods do not corrupt the meter.
-#
-# Assumptions:
-#   • time.monotonic() is used; it never goes backwards and is unaffected
-#     by system-clock adjustments.
-#   • Energy is only accumulated when the simulation is actively running
-#     (pause_simulation == False) AND a previous tick timestamp exists.
-#   • The first tick after startup (or after resume) does not accumulate
-#     energy because the elapsed time since the last update is unknown.
-#   • Negative delta_t is clamped to zero as a safety guard against
-#     unexpected Streamlit rerun ordering.
-if not settings["pause_simulation"]:
-    current_tick_time = time.monotonic()
-    if st.session_state.last_tick_time is not None:
-        delta_t_s = current_tick_time - st.session_state.last_tick_time
-        delta_t_s = max(0.0, delta_t_s)   # clamp: never go negative
-        st.session_state.energy_kwh += energy_kwh(total_P_W, delta_t_s)
-    st.session_state.last_tick_time = current_tick_time
-else:
-    # Paused — reset the clock so that when we resume the first tick
-    # after unpausing does not include the duration of the paused period.
-    st.session_state.last_tick_time = None
+# Energy accumulation — delegates to calculations.accumulate_energy_tick()
+# so that unit tests exercise the identical production code path.
+# See that function's docstring for full assumptions and algorithm details.
+st.session_state.energy_kwh, st.session_state.last_tick_time = (
+    accumulate_energy_tick(
+        energy_kwh_current=st.session_state.energy_kwh,
+        total_P_W=total_P_W,
+        paused=settings["pause_simulation"],
+        last_tick_time=st.session_state.last_tick_time,
+        current_tick_time=time.monotonic(),
+    )
+)
 
 # Per-circuit load %
 for cr in circuit_readings:

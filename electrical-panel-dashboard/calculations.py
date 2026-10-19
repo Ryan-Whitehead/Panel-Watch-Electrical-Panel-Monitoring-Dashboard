@@ -388,3 +388,72 @@ def sum_phase_power(
         "Q_total": Q_total,
         "PF_agg":  PF_agg,
     }
+
+
+# ---------------------------------------------------------------------------
+# Energy Accumulation Tick (monotonic-clock, pause-safe)
+# ---------------------------------------------------------------------------
+
+def accumulate_energy_tick(
+    energy_kwh_current: float,
+    total_P_W: float,
+    paused: bool,
+    last_tick_time: "float | None",
+    current_tick_time: float,
+) -> "tuple[float, float | None]":
+    """
+    Accumulate electrical energy for one simulation tick using actual elapsed time.
+
+    This pure function encapsulates the monotonic-clock energy-metering logic
+    used by app.py so that the identical production code path can be exercised
+    by unit tests without requiring Streamlit session state.
+
+    Algorithm:
+        • If the simulation is running AND a previous tick timestamp exists,
+          compute delta_t = current_tick_time − last_tick_time, clamp to >= 0,
+          and add energy_kwh(total_P_W, delta_t) to the accumulator.
+        • On the very first live tick (last_tick_time is None) no energy is
+          added because the elapsed time since the previous update is unknown.
+        • Pausing resets last_tick_time to None so that when the simulation
+          resumes the first tick after unpausing is also skipped, preventing
+          the paused wall-clock duration from appearing in the energy meter.
+        • delta_t is clamped to >= 0 as a safety guard against unexpected
+          Streamlit rerun ordering (time.monotonic() should never go backward,
+          but the clamp makes the function safe regardless).
+
+    Args:
+        energy_kwh_current: Accumulated energy before this tick (kWh).
+        total_P_W:          Total real power during this tick (W).  Must be >= 0.
+        paused:             True when the simulation is paused.
+        last_tick_time:     time.monotonic() value recorded at the previous live
+                            tick, or None if this is the first tick or just after
+                            a resume.
+        current_tick_time:  time.monotonic() value for the current tick.
+
+    Returns:
+        Tuple (new_energy_kwh, new_last_tick_time) where new_last_tick_time is
+        current_tick_time when running, or None when paused.
+
+    Raises:
+        ValueError: If total_P_W < 0 (propagated from energy_kwh()).
+
+    Interview Note:
+        Revenue-grade energy meters integrate power over each 15-minute demand
+        interval using a high-frequency sample clock.  This function implements
+        the same principle at dashboard-tick granularity: each tick measures the
+        actual elapsed time rather than assuming a fixed interval, so variable
+        execution time and OS scheduling jitter do not accumulate into metering
+        error.  Using time.monotonic() (rather than time.time()) ensures the
+        reference clock is unaffected by NTP corrections or daylight-saving
+        transitions.
+    """
+    if not paused:
+        if last_tick_time is not None:
+            delta_t_s = current_tick_time - last_tick_time
+            delta_t_s = max(0.0, delta_t_s)
+            energy_kwh_current += energy_kwh(total_P_W, delta_t_s)
+        new_last_tick_time: "float | None" = current_tick_time
+    else:
+        new_last_tick_time = None
+
+    return energy_kwh_current, new_last_tick_time

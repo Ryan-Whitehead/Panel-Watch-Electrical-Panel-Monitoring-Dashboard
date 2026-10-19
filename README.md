@@ -16,7 +16,7 @@ This project is a SCADA-style electrical panel monitoring dashboard built with *
 - Real-time fault classification with **WARNING** and **FAULT** severity levels
 - Persistent fault event log (CSV, row-capped) that survives browser reloads
 - Adjustable voltage, current, and power factor thresholds via sidebar sliders
-- 74 unit tests with pytest-cov HTML coverage report
+- 98 unit tests with pytest-cov HTML coverage report (per-phase power, energy accumulation, fault detection)
 
 ---
 
@@ -31,8 +31,8 @@ This project is a SCADA-style electrical panel monitoring dashboard built with *
 ## 3. Installation
 
 ```bash
-git clone <repo-url>
-cd electrical-panel-dashboard
+git clone https://github.com/Ryan-Whitehead/Panel-Watch-Electrical-Panel-Monitoring-Dashboard.git
+cd Panel-Watch-Electrical-Panel-Monitoring-Dashboard/electrical-panel-dashboard
 
 python -m venv .venv
 
