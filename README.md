@@ -107,23 +107,28 @@ All thresholds are adjustable in real-time via sidebar sliders.
 ## 8. Project Structure
 
 ```
-electrical-panel-dashboard/
-├── app.py                      # Streamlit entry point — wires all modules, auto-rerun loop
-├── config.py                   # All constants, thresholds, 8 circuit definitions
-├── simulator.py                # Probabilistic sensor data generator (SIMULATED)
-├── calculations.py             # Pure EE math functions (no Streamlit dependency)
-├── fault_detector.py           # Stateless fault classification; FaultEvent dataclass
-├── logger.py                   # CSV fault log persistence with row cap
-├── ui_components.py            # Reusable Streamlit/Plotly widget builders
-├── data/
-│   └── fault_log.csv           # Auto-created; persists across browser reloads
-├── tests/
-│   ├── __init__.py
-│   ├── test_calculations.py    # 45 unit tests for EE formulas
-│   └── test_fault_detector.py  # 29 unit tests for fault classification
-├── .coveragerc                 # pytest-cov config — HTML report at htmlcov/
-├── requirements.txt            # Pinned dependencies
-└── README.md
+Panel-Watch-Electrical-Panel-Monitoring-Dashboard/   ← repo root
+├── README.md                           # This file
+├── .github/
+│   └── workflows/
+│       └── ci.yml                      # GitHub Actions CI/CD pipeline
+└── electrical-panel-dashboard/
+    ├── app.py                          # Streamlit entry point — wires all modules, auto-rerun loop
+    ├── config.py                       # All constants, thresholds, 8 circuit definitions
+    ├── simulator.py                    # Probabilistic sensor data generator (SIMULATED)
+    ├── calculations.py                 # Pure EE math functions (no Streamlit dependency)
+    ├── fault_detector.py               # Stateless fault classification; FaultEvent dataclass
+    ├── logger.py                       # CSV fault log persistence with row cap
+    ├── ui_components.py                # Reusable Streamlit/Plotly widget builders
+    ├── Dockerfile                      # Container image for the Streamlit app
+    ├── data/
+    │   └── fault_log.csv               # Auto-created; persists across browser reloads
+    ├── tests/
+    │   ├── __init__.py
+    │   ├── test_calculations.py        # 45 unit tests for EE formulas
+    │   └── test_fault_detector.py      # 29 unit tests for fault classification
+    ├── .coveragerc                     # pytest-cov config — HTML report at htmlcov/
+    └── requirements.txt                # Pinned dependencies
 ```
 
 ---
