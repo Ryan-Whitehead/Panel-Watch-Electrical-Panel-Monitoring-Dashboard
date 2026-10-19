@@ -1,22 +1,28 @@
 # Electrical Panel Monitoring Dashboard
 
+![CI](https://github.com/Ryan-Whitehead/Panel-Watch-Electrical-Panel-Monitoring-Dashboard/actions/workflows/ci.yml/badge.svg)
+
 > **All sensor readings are SIMULATED by a probabilistic noise model. This project does not interface with real electrical hardware.**
 
 ---
 
 ## 1. Project Overview
 
-This project is a SCADA-style electrical panel monitoring dashboard built with **Streamlit**, **Plotly**, and **Python**. It simulates a 277/480 V 3-phase commercial electrical panel with eight configurable branch circuits, displays real-time power metrics, classifies faults by severity, and persists alarm events to a CSV log. The codebase is structured around pure-function EE math, object-oriented design patterns, and a full pytest suite with HTML coverage reporting — demonstrating how classical electrical engineering fundamentals can be implemented and validated as clean, testable software.
+This project is a SCADA-style electrical panel monitoring dashboard built with **Streamlit**, **Plotly**, and **Python**. It simulates a building-wide electrical infrastructure — 20 panels across 12 floors — with 3-phase bus monitoring, 8 configurable branch circuits per panel, a maintenance queue, and an analytics tab. The codebase is structured around pure-function EE math, object-oriented design patterns, and a full pytest suite with HTML coverage reporting — demonstrating how classical electrical engineering fundamentals can be implemented and validated as clean, testable software.
 
 **Key features:**
 
 - 277/480 V 3-phase bus monitoring with power triangle visualization (S, P, Q, PF)
+- Building-wide monitor — 20 panels across 12 floors with per-panel status grid
 - 8 configurable branch circuits with independent per-circuit fault detection
 - Auto-refreshing SCADA-style dashboard via `st.rerun` loop (configurable interval)
 - Real-time fault classification with **WARNING** and **FAULT** severity levels
 - Persistent fault event log (CSV, row-capped) that survives browser reloads
+- Maintenance queue with priority ranking, acknowledgement, and notes
 - Adjustable voltage, current, and power factor thresholds via sidebar sliders
-- 98 unit tests with pytest-cov HTML coverage report (per-phase power, energy accumulation, fault detection)
+- 207 unit tests with pytest-cov HTML coverage report
+- GitHub Actions CI/CD — lint (Ruff), test matrix (Python 3.10/3.11/3.12), Docker build
+- Dockerfile included for containerised deployment
 
 ---
 
@@ -63,7 +69,40 @@ Use the sidebar to:
 
 ---
 
-## 5. Running Tests
+## 5. CI/CD
+
+The pipeline lives at [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and runs on every push and pull request to `main`.
+
+| Job | Steps |
+|---|---|
+| **test** (3× matrix) | Install deps → Ruff lint → pytest with coverage → upload HTML artifact + Codecov |
+| **docker** | Build Docker image with Buildx layer cache (validates the image builds cleanly) |
+
+The matrix covers **Python 3.10, 3.11, and 3.12**. The `docker` job only runs after all three `test` jobs pass (`needs: test`).
+
+Lint is enforced by **Ruff** pinned at `0.11.13` with the config in [`electrical-panel-dashboard/ruff.toml`](electrical-panel-dashboard/ruff.toml):
+- Rules: `E` (pycodestyle errors), `F` (pyflakes), `I` (isort)
+- `E741` ignored — `I` is a valid electrical engineering symbol for current
+
+---
+
+## 6. Running with Docker
+
+```bash
+cd electrical-panel-dashboard
+
+# Build
+docker build -t panel-watch .
+
+# Run
+docker run -p 8501:8501 panel-watch
+```
+
+The dashboard will be available at **http://localhost:8501**.
+
+---
+
+## 7. Running Tests
 
 ```bash
 # Run all tests with verbose output
@@ -77,7 +116,7 @@ Open `htmlcov/index.html` in a browser to view the line-by-line coverage report.
 
 ---
 
-## 6. Formula Reference
+## 8. Formula Reference
 
 | Symbol | Formula | Units | Module | Engineering Note |
 |--------|---------|-------|--------|-----------------|
@@ -92,7 +131,7 @@ Open `htmlcov/index.html` in a browser to view the line-by-line coverage report.
 
 ---
 
-## 7. Fault Threshold Defaults
+## 9. Fault Threshold Defaults
 
 | Parameter | Warning | Fault | Nominal |
 |-----------|---------|-------|---------|
@@ -104,36 +143,44 @@ All thresholds are adjustable in real-time via sidebar sliders.
 
 ---
 
-## 8. Project Structure
+## 10. Project Structure
 
 ```
 Panel-Watch-Electrical-Panel-Monitoring-Dashboard/   ← repo root
 ├── README.md                           # This file
+├── .gitignore
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                      # GitHub Actions CI/CD pipeline
 └── electrical-panel-dashboard/
-    ├── app.py                          # Streamlit entry point — wires all modules, auto-rerun loop
-    ├── config.py                       # All constants, thresholds, 8 circuit definitions
-    ├── simulator.py                    # Probabilistic sensor data generator (SIMULATED)
+    ├── app.py                          # Streamlit entry point — 7-tab dashboard
+    ├── config.py                       # Constants, thresholds, 8 circuits, 20 building panels
+    ├── simulator.py                    # Single-panel probabilistic sensor data generator (SIMULATED)
+    ├── building_simulator.py           # Building-wide simulator — 20 independent panels
+    ├── building.py                     # PanelDefinition, PanelState, registry helpers
+    ├── maintenance.py                  # MaintenanceQueue, MaintenanceItem, compute_priority
     ├── calculations.py                 # Pure EE math functions (no Streamlit dependency)
     ├── fault_detector.py               # Stateless fault classification; FaultEvent dataclass
     ├── logger.py                       # CSV fault log persistence with row cap
     ├── ui_components.py                # Reusable Streamlit/Plotly widget builders
     ├── Dockerfile                      # Container image for the Streamlit app
+    ├── ruff.toml                       # Ruff lint config (rules E, F, I — pinned v0.11.13)
     ├── data/
     │   └── fault_log.csv               # Auto-created; persists across browser reloads
     ├── tests/
     │   ├── __init__.py
-    │   ├── test_calculations.py        # 45 unit tests for EE formulas
-    │   └── test_fault_detector.py      # 29 unit tests for fault classification
+    │   ├── test_calculations.py        # 56 unit tests for EE formulas + per-phase power
+    │   ├── test_fault_detector.py      # 29 unit tests for fault classification
+    │   ├── test_energy_accumulation.py # 13 unit tests for energy accumulation
+    │   ├── test_building.py            # 47 unit tests for PanelDefinition, PanelState, registries
+    │   └── test_maintenance.py         # 62 unit tests for MaintenanceQueue and compute_priority
     ├── .coveragerc                     # pytest-cov config — HTML report at htmlcov/
     └── requirements.txt                # Pinned dependencies
 ```
 
 ---
 
-## 9. Assumptions and Limitations
+## 11. Assumptions and Limitations
 
 1. **Sinusoidal steady-state**: All formulas assume pure sinusoidal voltage and current at 60 Hz. No harmonic distortion is modeled.
 2. **Balanced load approximation**: The 3-phase power formula `P = √3 × V_L × I_L × PF` assumes a balanced (symmetrical) load. The simulator introduces slight imbalance via Gaussian noise.
@@ -146,7 +193,7 @@ Panel-Watch-Electrical-Panel-Monitoring-Dashboard/   ← repo root
 
 ---
 
-## 10. Interview Prep / Engineering Notes
+## 12. Interview Prep / Engineering Notes
 
 ### Why separate `calculations.py` from the rest?
 Pure functions with no side effects are the easiest code to test. By keeping EE math in one file with no Streamlit or Pandas imports, any formula can be tested in isolation with a single function call. This mirrors how embedded protection relay firmware separates measurement algorithms from I/O drivers — a pattern called "separation of concerns."
@@ -173,7 +220,7 @@ Streamlit re-executes the entire script on every refresh. In-memory state stored
 1. Replace the simulator with a real **Modbus/TCP** or **DNP3** driver (e.g., `pymodbus`)
 2. Use a **time-series database** (InfluxDB, TimescaleDB) instead of CSV
 3. Add **authentication** (Streamlit auth or a reverse proxy)
-4. Package as a **Docker container** for deployment
+4. ~~Package as a Docker container~~ — **done** (`Dockerfile` + CI build job)
 5. Add **ROCOF** (rate-of-change of frequency) fault detection for grid frequency events
 6. Model **harmonic distortion** to compute true power factor vs. displacement power factor
 7. Add **email/SMS alerting** when FAULT severity events are logged
