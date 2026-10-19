@@ -35,7 +35,6 @@ from ui_components import (
     metric_card,
     phase_gauge,
     sidebar_controls,
-    status_color,
     trend_chart,
 )
 

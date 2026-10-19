@@ -20,13 +20,10 @@ Design notes:
       crashes the dashboard.
 """
 
-from pathlib import Path
-
 import pandas as pd
 
 import config
 from fault_detector import FaultEvent
-
 
 CSV_COLUMNS: list[str] = [
     "timestamp", "circuit", "parameter", "value",
@@ -152,7 +149,7 @@ def fault_counts(severity_filter: str | None = None) -> dict:
         result = {
             "WARNING": int(counts.get("WARNING", 0)),
             "FAULT":   int(counts.get("FAULT", 0)),
-            "total":   int(len(df)),
+            "total":   len(df),
         }
         if severity_filter:
             return {severity_filter: result.get(severity_filter, 0)}

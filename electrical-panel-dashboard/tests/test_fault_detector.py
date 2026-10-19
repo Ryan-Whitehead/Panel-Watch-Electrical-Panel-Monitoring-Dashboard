@@ -8,8 +8,6 @@ between-threshold, batch detection, and mixed-format readings.
 
 from datetime import datetime
 
-import pytest
-
 import config
 from fault_detector import (
     FaultEvent,

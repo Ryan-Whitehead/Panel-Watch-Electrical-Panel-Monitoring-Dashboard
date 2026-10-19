@@ -26,7 +26,6 @@ import pandas as pd
 
 import config
 
-
 SIMULATED_DATA: bool = True  # Always True — data is never from real sensors.
 
 
