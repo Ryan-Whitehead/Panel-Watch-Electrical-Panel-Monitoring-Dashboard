@@ -151,19 +151,28 @@ if "active_num_floors" not in st.session_state:
 if settings["apply_floors"]:
     _requested_floors = settings["pending_num_floors"]
     _new_panels = distribute_panels(config.BUILDING_PANELS, _requested_floors)
-    st.session_state.building_sim  = BuildingSimulator(_new_panels)
-    st.session_state.maint_queue   = MaintenanceQueue()
+    st.session_state.building_sim = BuildingSimulator(_new_panels)
+    _new_registry = st.session_state.building_sim.registry
+
+    # Preserve maintenance history — update floor/location on existing items
+    # whose panel_id is still in the new registry; keep others as history.
+    for _item in st.session_state.maint_queue.all_items():
+        _ps = _new_registry.get(_item.panel_id)
+        if _ps is not None:
+            _item.floor    = _ps.definition.floor
+            _item.location = _ps.definition.location
+
     _new_demo_pid = panel_ids_for_demo(_new_panels)
-    st.session_state.demo_state    = DemoState(
+    st.session_state.demo_state = DemoState(
         demo_mode_active=st.session_state.demo_state.demo_mode_active,
         demo_panel_id=_new_demo_pid,
     )
-    if st.session_state.selected_panel not in st.session_state.building_sim.registry:
+    if st.session_state.selected_panel not in _new_registry:
         st.session_state.selected_panel = _new_demo_pid
     st.session_state.active_num_floors = _requested_floors
     st.success(
         f"🏢 Building reconfigured to **{_requested_floors} floor(s)**. "
-        "Simulation and maintenance queue have been reset. "
+        "Maintenance history preserved. "
         "Persistent fault log is preserved."
     )
 
