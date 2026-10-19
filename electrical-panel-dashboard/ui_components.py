@@ -345,12 +345,21 @@ def sidebar_controls() -> dict:
     """
     Render all sidebar controls and return the current user-selected settings.
 
+    Floor configuration uses a *pending* pattern: the number input writes to
+    ``st.session_state.pending_num_floors`` and the "Apply Configuration" button
+    must be clicked before the floor change takes effect in ``app.py``.  This
+    prevents an accidental sidebar nudge from silently resetting the building
+    simulator and maintenance queue mid-demo.
+
     Returns:
         dict with keys:
             refresh_interval   (int, seconds)
             pause_simulation   (bool)
             history_window     (int, readings)
-            num_floors         (int, 1–50)
+            num_floors         (int, currently **active** floor count)
+            apply_floors       (bool, True only when Apply button was clicked
+                                *and* pending differs from active)
+            pending_num_floors (int, value shown in the number input)
             clear_log          (bool, True if button was clicked this run)
             thresholds         (dict matching config.THRESHOLDS structure)
                 voltage:   {warn_pct, fault_pct}  — fractional multipliers
@@ -363,19 +372,48 @@ def sidebar_controls() -> dict:
     st.sidebar.caption("⚠️ **SIMULATED DATA** — not from real sensors or hardware.")
     st.sidebar.divider()
 
+    # ── Building Configuration (pending pattern) ────────────────────────────
+    # ``active_num_floors`` lives in session state (set by app.py on first run
+    # and updated only when the Apply button is confirmed).  We read it here so
+    # the number input always reflects the *currently running* floor count as
+    # its default, not the module-level DEFAULT_NUM_FLOORS constant.
+    _active = st.session_state.get("active_num_floors", DEFAULT_NUM_FLOORS)
+
     st.sidebar.subheader("🏢 Building Configuration")
-    num_floors = st.sidebar.number_input(
+    pending_floors = st.sidebar.number_input(
         "Number of Floors",
         min_value=MIN_FLOORS,
         max_value=MAX_FLOORS,
-        value=DEFAULT_NUM_FLOORS,
+        value=_active,
         step=1,
+        key="pending_num_floors",
         help=(
             f"Configure the number of floors in the simulated building "
             f"({MIN_FLOORS}–{MAX_FLOORS}). "
             "The 20 panels are redistributed across the new floor count "
             "using a round-robin algorithm. "
-            "Changing floors resets the simulation and maintenance queue."
+            "Click **Apply Configuration** to confirm — changing floors "
+            "resets the simulation and maintenance queue."
+        ),
+    )
+
+    _floors_changed = int(pending_floors) != _active
+    if _floors_changed:
+        st.sidebar.warning(
+            f"⚠️ Pending change: **{_active} → {int(pending_floors)} floor(s)**\n\n"
+            "Applying will reset the Building Simulator and Maintenance Queue. "
+            "The persistent fault log is preserved.",
+            icon=None,
+        )
+
+    apply_floors = st.sidebar.button(
+        "✅ Apply Configuration",
+        key="btn_apply_floors",
+        use_container_width=True,
+        disabled=not _floors_changed,
+        help=(
+            "Confirm the floor-count change. "
+            "This resets the simulator and maintenance queue."
         ),
     )
 
@@ -437,12 +475,14 @@ def sidebar_controls() -> dict:
     }
 
     return {
-        "refresh_interval": refresh_interval,
-        "pause_simulation": pause_simulation,
-        "history_window":   history_window,
-        "num_floors":       int(num_floors),
-        "clear_log":        clear_log_clicked,
-        "thresholds":       thresholds,
+        "refresh_interval":   refresh_interval,
+        "pause_simulation":   pause_simulation,
+        "history_window":     history_window,
+        "num_floors":         _active,            # currently active (not pending)
+        "apply_floors":       apply_floors and _floors_changed,
+        "pending_num_floors": int(pending_floors),
+        "clear_log":          clear_log_clicked,
+        "thresholds":         thresholds,
     }
 
 

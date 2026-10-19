@@ -1,226 +1,297 @@
-# Electrical Panel Monitoring Dashboard
+# ⚡ PanelWatch — Building Electrical Panel Monitoring Dashboard
 
-![CI](https://github.com/Ryan-Whitehead/Panel-Watch-Electrical-Panel-Monitoring-Dashboard/actions/workflows/ci.yml/badge.svg)
-
-> **All sensor readings are SIMULATED by a probabilistic noise model. This project does not interface with real electrical hardware.**
-
----
-
-## 1. Project Overview
-
-This project is a SCADA-style electrical panel monitoring dashboard built with **Streamlit**, **Plotly**, and **Python**. It simulates a building-wide electrical infrastructure — 20 panels across 12 floors — with 3-phase bus monitoring, 8 configurable branch circuits per panel, a maintenance queue, and an analytics tab. The codebase is structured around pure-function EE math, object-oriented design patterns, and a full pytest suite with HTML coverage reporting — demonstrating how classical electrical engineering fundamentals can be implemented and validated as clean, testable software.
-
-**Key features:**
-
-- 277/480 V 3-phase bus monitoring with power triangle visualization (S, P, Q, PF)
-- Building-wide monitor — 20 panels across 12 floors with per-panel status grid
-- 8 configurable branch circuits with independent per-circuit fault detection
-- Auto-refreshing SCADA-style dashboard via `st.rerun` loop (configurable interval)
-- Real-time fault classification with **WARNING** and **FAULT** severity levels
-- Persistent fault event log (CSV, row-capped) that survives browser reloads
-- Maintenance queue with priority ranking, acknowledgement, and notes
-- Adjustable voltage, current, and power factor thresholds via sidebar sliders
-- 207 unit tests with pytest-cov HTML coverage report
-- GitHub Actions CI/CD — lint (Ruff), test matrix (Python 3.10/3.11/3.12), Docker build
-- Dockerfile included for containerised deployment
+> **Portfolio Project** — built by an Electrical Engineering Technology junior as a
+> demonstration of real-time electrical monitoring, fault detection, and maintenance
+> workflow concepts.
+>
+> ⚠️ **All data is entirely simulated. This dashboard does not connect to, monitor,
+> or control any real electrical equipment or sensors.**
 
 ---
 
-## 2. Prerequisites
+## Overview
 
-- **Python 3.10 or higher** — f-strings, `|` union type hints, and `dataclasses` are used throughout
-- **pip** — for installing dependencies from `requirements.txt`
-- *(Optional)* **virtualenv** or the built-in `venv` module — recommended to isolate project dependencies
+PanelWatch is a professional-grade multi-panel electrical monitoring dashboard built
+with **Python 3.10+**, **Streamlit**, **Pandas**, and **Plotly**. It simulates a
+20-panel, configurable-floor commercial building operating on a 277/480 V 3-phase
+60 Hz system and demonstrates:
+
+- Realistic per-panel voltage, current, power factor, and energy readings
+- Real-time fault detection (overcurrent, undervoltage, low power factor)
+- A prioritised maintenance queue with acknowledgement, notes, and CSV export
+- An interactive fault injection and guided 6-step demo scenario
+- Building-wide analytics from a persistent fault event log
+- Configurable warning/fault thresholds across all three electrical parameters
 
 ---
 
-## 3. Installation
+## Architecture
+
+```
+electrical-panel-dashboard/
+├── app.py                  Streamlit entry point — 7-tab orchestration only
+├── calculations.py         Pure EE math (real power, reactive power, energy, etc.)
+├── simulator.py            Single-panel probabilistic reading generator
+├── building_simulator.py   20-panel BuildingSimulator with per-panel state
+├── fault_detector.py       Stateless fault classification from readings
+├── logger.py               CSV fault log — append, load, clear, count
+├── maintenance.py          MaintenanceItem, MaintenanceQueue, compute_priority
+├── building.py             PanelDefinition, PanelState, registry helpers
+├── building_config.py      distribute_panels(), active_floors(), floor bounds
+├── config.py               All constants — BUILDING_PANELS, thresholds, paths
+├── demo_mode.py            DemoState, build_demo_steps(), guided demo helpers
+├── report_generator.py     generate_maintenance_csv() — 18-column CSV report
+├── ui_components.py        Reusable Streamlit/Plotly widget builders
+├── requirements.txt
+├── Dockerfile
+├── ruff.toml               Linting config (E/F/I, target py310, ignore E741)
+└── tests/
+    ├── test_calculations.py        56 tests — EE formulas + edge cases
+    ├── test_fault_detector.py      29 tests — fault classification
+    ├── test_energy_accumulation.py 13 tests — energy tick accumulation
+    ├── test_building.py            47 tests — PanelDefinition, PanelState, registry
+    ├── test_maintenance.py         62 tests — MaintenanceQueue full lifecycle
+    ├── test_demo_mode.py           38 tests — DemoState, build_demo_steps
+    ├── test_report_generator.py    38 tests — CSV report generation
+    └── test_building_config.py     50 tests — distribute_panels, active_floors
+```
+
+**Total: 333 tests — all passing.**
+
+### Key design principle
+
+All electrical calculation and fault-detection logic lives in pure Python modules
+with no Streamlit imports. This means every formula can be unit-tested in isolation
+without spinning up a browser, and the same logic could be reused in a CLI tool,
+REST API, or a different UI framework without modification.
+
+---
+
+## Dashboard Tabs
+
+| # | Tab | Purpose |
+|---|-----|---------|
+| 0 | 🏢 Building Overview | 20-panel status grid, floor map, search/filter, per-panel trends |
+| 1 | ⚡ 3-Phase Bus | Phase gauges, voltage/current/PF trend charts, energy accumulation |
+| 2 | 🔌 Circuit Breakdown | 8-circuit load bar chart, per-circuit current trends |
+| 3 | 🔧 Fault Simulation | Demo Mode toggle, guided 6-step demo, manual fault injection |
+| 4 | 🛠️ Maintenance Queue | Priority queue, acknowledge, notes, resolve, CSV export |
+| 5 | 📊 Analytics | Fault events by category, by panel, cumulative trend over time |
+| 6 | 🚨 Fault Log | Raw timestamped fault event table with severity highlighting |
+
+---
+
+## Setup Instructions
+
+### Prerequisites
+
+| Tool | Version |
+|------|---------|
+| Python | 3.10 or newer |
+| pip | latest |
+
+### 1 — Clone the repository
 
 ```bash
 git clone https://github.com/Ryan-Whitehead/Panel-Watch-Electrical-Panel-Monitoring-Dashboard.git
-cd Panel-Watch-Electrical-Panel-Monitoring-Dashboard/electrical-panel-dashboard
-
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
+cd Panel-Watch-Electrical-Panel-Monitoring-Dashboard
 ```
 
----
-
-## 4. Running the Dashboard
+### 2 — Create and activate a virtual environment
 
 ```bash
-streamlit run app.py
+# macOS / Linux
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Windows (PowerShell)
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-The dashboard opens at **http://localhost:8501** by default. It auto-refreshes every **3 seconds** (configurable via the **Refresh Interval** slider in the sidebar). Each refresh calls the simulator, runs fault detection across all circuits, appends any new fault events to the CSV log, and re-renders all charts.
+### 3 — Install dependencies
 
-Use the sidebar to:
-- Pause / resume auto-refresh
-- Adjust voltage, current, and power factor thresholds
-- Change the trend-chart history window
-- Clear the fault log
+```bash
+pip install -r electrical-panel-dashboard/requirements.txt
+```
 
----
-
-## 5. CI/CD
-
-The pipeline lives at [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and runs on every push and pull request to `main`.
-
-| Job | Steps |
-|---|---|
-| **test** (3× matrix) | Install deps → Ruff lint → pytest with coverage → upload HTML artifact + Codecov |
-| **docker** | Build Docker image with Buildx layer cache (validates the image builds cleanly) |
-
-The matrix covers **Python 3.10, 3.11, and 3.12**. The `docker` job only runs after all three `test` jobs pass (`needs: test`).
-
-Lint is enforced by **Ruff** pinned at `0.11.13` with the config in [`electrical-panel-dashboard/ruff.toml`](electrical-panel-dashboard/ruff.toml):
-- Rules: `E` (pycodestyle errors), `F` (pyflakes), `I` (isort)
-- `E741` ignored — `I` is a valid electrical engineering symbol for current
-
----
-
-## 6. Running with Docker
+### 4 — Run the dashboard
 
 ```bash
 cd electrical-panel-dashboard
-
-# Build
-docker build -t panel-watch .
-
-# Run
-docker run -p 8501:8501 panel-watch
+streamlit run app.py
 ```
 
-The dashboard will be available at **http://localhost:8501**.
+The dashboard opens at `http://localhost:8501` by default.
 
----
-
-## 7. Running Tests
+### 5 — Run the test suite
 
 ```bash
-# Run all tests with verbose output
-pytest tests/ -v
-
-# Run with coverage report (HTML at htmlcov/index.html)
-pytest tests/ --cov=. --cov-report=html
+cd electrical-panel-dashboard
+python -m pytest tests/ -v
 ```
 
-Open `htmlcov/index.html` in a browser to view the line-by-line coverage report.
+Expected output: **333 passed** with no warnings.
 
----
+### 6 — Lint
 
-## 8. Formula Reference
-
-| Symbol | Formula | Units | Module | Engineering Note |
-|--------|---------|-------|--------|-----------------|
-| S | S = V × I | VA | calculations.py | Apparent power — product of RMS voltage and current; what the utility source must supply |
-| P | P = V × I × PF | W | calculations.py | Real power — the work-doing component; only P produces heat, torque, or light |
-| Q | Q = √(S² − P²) | VAR | calculations.py | Reactive power — energy stored and released by inductors and capacitors per cycle |
-| PF | PF = cos(θ) | dimensionless | calculations.py | Power factor — ratio of real to apparent power; θ is the V–I phase angle |
-| E | E = P × Δt / 3 600 000 | kWh | calculations.py | Energy — time integral of power; Δt in seconds |
-| Load% | (I_actual / I_rated) × 100 | % | calculations.py | How close a circuit is to its rated current capacity |
-| dev% | (V − V_nom) / V_nom × 100 | % | calculations.py | Signed voltage deviation; negative = under-voltage |
-| P₃φ | P = √3 × V_L × I_L × PF | W | calculations.py | 3-phase power; √3 ≈ 1.732 arises from the 120° phase displacement between phases |
-
----
-
-## 9. Fault Threshold Defaults
-
-| Parameter | Warning | Fault | Nominal |
-|-----------|---------|-------|---------|
-| Voltage (L-N) | < 249.3 V (−10 %) | < 235.45 V (−15 %) | 277 V |
-| Phase Current | > 220 A (110 % of rated 200 A) | > 250 A (125 %) | 160 A (80 % load) |
-| Power Factor | < 0.85 | < 0.75 | 0.88 |
-
-All thresholds are adjustable in real-time via sidebar sliders.
-
----
-
-## 10. Project Structure
-
+```bash
+cd electrical-panel-dashboard
+python -m ruff check .
 ```
-Panel-Watch-Electrical-Panel-Monitoring-Dashboard/   ← repo root
-├── README.md                           # This file
-├── .gitignore
-├── .github/
-│   └── workflows/
-│       └── ci.yml                      # GitHub Actions CI/CD pipeline
-└── electrical-panel-dashboard/
-    ├── app.py                          # Streamlit entry point — 7-tab dashboard
-    ├── config.py                       # Constants, thresholds, 8 circuits, 20 building panels
-    ├── simulator.py                    # Single-panel probabilistic sensor data generator (SIMULATED)
-    ├── building_simulator.py           # Building-wide simulator — 20 independent panels
-    ├── building.py                     # PanelDefinition, PanelState, registry helpers
-    ├── maintenance.py                  # MaintenanceQueue, MaintenanceItem, compute_priority
-    ├── calculations.py                 # Pure EE math functions (no Streamlit dependency)
-    ├── fault_detector.py               # Stateless fault classification; FaultEvent dataclass
-    ├── logger.py                       # CSV fault log persistence with row cap
-    ├── ui_components.py                # Reusable Streamlit/Plotly widget builders
-    ├── Dockerfile                      # Container image for the Streamlit app
-    ├── ruff.toml                       # Ruff lint config (rules E, F, I — pinned v0.11.13)
-    ├── data/
-    │   └── fault_log.csv               # Auto-created; persists across browser reloads
-    ├── tests/
-    │   ├── __init__.py
-    │   ├── test_calculations.py        # 56 unit tests for EE formulas + per-phase power
-    │   ├── test_fault_detector.py      # 29 unit tests for fault classification
-    │   ├── test_energy_accumulation.py # 13 unit tests for energy accumulation
-    │   ├── test_building.py            # 47 unit tests for PanelDefinition, PanelState, registries
-    │   └── test_maintenance.py         # 62 unit tests for MaintenanceQueue and compute_priority
-    ├── .coveragerc                     # pytest-cov config — HTML report at htmlcov/
-    └── requirements.txt                # Pinned dependencies
+
+Expected output: no errors.
+
+### Docker (optional)
+
+```bash
+docker build -t panelwatch ./electrical-panel-dashboard
+docker run -p 8501:8501 panelwatch
 ```
 
 ---
 
-## 11. Assumptions and Limitations
+## Electrical Engineering Concepts
 
-1. **Sinusoidal steady-state**: All formulas assume pure sinusoidal voltage and current at 60 Hz. No harmonic distortion is modeled.
-2. **Balanced load approximation**: The 3-phase power formula `P = √3 × V_L × I_L × PF` assumes a balanced (symmetrical) load. The simulator introduces slight imbalance via Gaussian noise.
-3. **Single-point snapshot readings**: Each reading is an instantaneous RMS sample, not a waveform capture. Real power analyzers sample at 10–50 kHz.
-4. **No transformer model**: The simulation does not model transformer losses, tap changes, or magnetizing current.
-5. **Displacement PF only**: PF here is displacement power factor (DPF = cos θ), not true power factor (TPF). Variable-frequency drives (VFDs) and switching supplies produce harmonics that distort TPF significantly.
-6. **Probabilistic fault injection**: Faults are injected randomly at 4 % probability per tick. In a real system, faults are deterministic physical events. The probability model is for demonstration only.
-7. **Energy resets on app restart**: kWh accumulation is stored in Streamlit session state and resets when the server restarts. The fault log persists; energy does not.
-8. **Single-user only**: The dashboard is not designed for multi-user concurrent access.
+### Formulas used
+
+| Quantity | Formula | Module |
+|----------|---------|--------|
+| Apparent power | S = V × I (VA) | `calculations.py` |
+| Real power | P = V × I × PF (W) | `calculations.py` |
+| Reactive power | Q = √(S² − P²) (VAR) | `calculations.py` |
+| Energy (tick) | ΔE = P × Δt / 3 600 000 (kWh) | `calculations.py` |
+| Load percentage | load% = (I_measured / I_rated) × 100 | `calculations.py` |
+| Voltage deviation | dev% = (V − V_nom) / V_nom × 100 | `calculations.py` |
+| Aggregate PF | PF_agg = P_total / S_total | `calculations.py` |
+
+### Fault conditions simulated
+
+| Condition | Default warning | Default fault |
+|-----------|----------------|---------------|
+| Undervoltage | < 90 % of 277 V (249.3 V) | < 85 % of 277 V (235.5 V) |
+| Overcurrent | > 110 % of rated current | > 125 % of rated current |
+| Low power factor | PF < 0.85 | PF < 0.75 |
+
+All thresholds are user-configurable via the sidebar sliders at runtime.
+
+### System assumptions
+
+- Nominal voltage: 277 V line-to-neutral, 480 V line-to-line
+- System frequency: 60 Hz
+- 20 panels, up to 50 floors (configurable 1–50)
+- Energy accumulation uses wall-clock elapsed time between ticks
+- Simulated readings use Gaussian noise around realistic nominal values;
+  fault probabilities are 4 % per panel per tick for background noise
+  (suppressed in Demo Mode)
 
 ---
 
-## 12. Interview Prep / Engineering Notes
+## Configurable Floors
 
-### Why separate `calculations.py` from the rest?
-Pure functions with no side effects are the easiest code to test. By keeping EE math in one file with no Streamlit or Pandas imports, any formula can be tested in isolation with a single function call. This mirrors how embedded protection relay firmware separates measurement algorithms from I/O drivers — a pattern called "separation of concerns."
+The sidebar **Number of Floors** input (1–50) redistributes all 20 panels across
+the new floor count using a round-robin algorithm. **Changing the floor count
+requires clicking "✅ Apply Configuration"** — an accidental nudge of the number
+input alone will not trigger a reset. The warning banner in the sidebar describes
+exactly what will change before you confirm.
 
-### Why a `FaultEvent` dataclass?
-Dataclasses provide typed, self-documenting data transfer objects. The `to_dict()` method makes CSV logging trivial. In industrial control systems, fault records are standardized structures — e.g., IEC 61968 Asset Management messages or DNP3 event objects. Using a dataclass instead of a plain dict prevents field-name typos and makes the code self-documenting.
+When applied:
+- The Building Simulator is rebuilt with the new panel distribution
+- The in-memory Maintenance Queue is reset
+- The persistent `fault_log.csv` is **preserved**
 
-### Why simulate faults probabilistically?
-A purely deterministic simulator would produce a flat line with no noise, which looks fake and doesn't demonstrate the fault-detection logic. Gaussian noise around nominal values plus rare probabilistic fault injection produces waveform patterns that resemble real SCADA historian data. The 4 % fault injection rate generates enough alarms to demonstrate the fault log without overwhelming it.
+---
 
-### What is the √3 factor in three-phase power?
-In a balanced 3-phase system, the three phase currents are 120° apart. When you sum their contributions to total power, the phasor geometry yields a √3 multiplier on the line-to-line voltage and line current product. Numerically: √3 ≈ 1.732. At 480 V, 200 A, PF = 0.90 this gives 1.732 × 480 × 200 × 0.90 ≈ **149.7 kW**.
+## Demo Mode
 
-### What is the difference between apparent, real, and reactive power?
-The power triangle: **S** (hypotenuse, VA) = apparent power — what the utility bills you for generation capacity. **P** (horizontal leg, W) = real power — what actually does work (heat, torque, light). **Q** (vertical leg, VAR) = reactive power — energy sloshing back and forth between source and inductive/capacitive loads. **PF = P / S = cos(θ)**. A PF of 0.85 means 85 % of apparent power is doing useful work; the remaining 15 % circulates as reactive current, causing extra I²R losses in conductors.
+Enable **Demo Mode** on the Fault Simulation tab (Tab 3) to suppress the 4 %
+background random fault probability. This produces a clean, distraction-free
+environment for the 6-step guided maintenance demonstration:
 
-### Why use `deque(maxlen=N)` for the history buffer?
-`collections.deque` with a `maxlen` is an O(1) ring buffer — appending a new reading automatically evicts the oldest one without any explicit deletion logic. For a dashboard that refreshes every few seconds and keeps 60 readings, this is far more efficient than appending to a growing list and slicing. It also has a bounded memory footprint, which matters for long-running dashboard sessions.
+1. Verify all panels normal
+2. Inject overcurrent on demo panel
+3. Observe fault propagation to maintenance queue
+4. Acknowledge the maintenance item
+5. Clear the fault injection
+6. Confirm recovery
 
-### Why persist fault events to CSV?
-Streamlit re-executes the entire script on every refresh. In-memory state stored in `st.session_state` survives reruns but not server restarts. A CSV log (like a simplified SCADA historian) survives restarts, can be opened in Excel, and demonstrates awareness of data persistence concerns found in real industrial systems.
+The demo panel is always the first panel assigned to floor 1 after any floor
+reconfiguration.
 
-### What would make this production-ready?
-1. Replace the simulator with a real **Modbus/TCP** or **DNP3** driver (e.g., `pymodbus`)
-2. Use a **time-series database** (InfluxDB, TimescaleDB) instead of CSV
-3. Add **authentication** (Streamlit auth or a reverse proxy)
-4. ~~Package as a Docker container~~ — **done** (`Dockerfile` + CI build job)
-5. Add **ROCOF** (rate-of-change of frequency) fault detection for grid frequency events
-6. Model **harmonic distortion** to compute true power factor vs. displacement power factor
-7. Add **email/SMS alerting** when FAULT severity events are logged
+---
+
+## Maintenance Report Export
+
+The Maintenance Queue tab exports an 18-column CSV report including:
+- Disclaimer header (SIMULATED DATA)
+- Building summary (total / normal / warning / fault panel counts)
+- Per-item: panel ID, floor, fault category, severity, measured value, unit,
+  priority, workflow status, first/latest detected timestamps, acknowledged-at,
+  resolved-at, and notes
+
+---
+
+## Limitations
+
+1. **No real hardware** — all readings are probabilistic simulations. Do not use
+   this dashboard to make decisions about real electrical systems.
+2. **Single-machine persistence** — the fault log (`fault_log.csv`) is a local CSV
+   file; there is no database or multi-user support.
+3. **Energy accuracy** — energy accumulation depends on wall-clock tick intervals.
+   The auto-rerun interval (1–10 s) introduces rounding imprecision; values are
+   illustrative only.
+4. **Streamlit rerun model** — the entire script re-executes on every tick. This is
+   appropriate for a portfolio demo but would not scale to hundreds of concurrent users.
+5. **Power quality** — harmonics, transients, and asymmetric loading are not modelled.
+6. **Fault injection persistence** — injected faults are stored in session state only;
+   they do not survive a page refresh.
+
+---
+
+## Test Coverage Summary
+
+| Test file | Tests | What is covered |
+|-----------|-------|----------------|
+| `test_calculations.py` | 56 | All EE formulas, edge cases (zero current, unity PF, negative deviation) |
+| `test_fault_detector.py` | 29 | All three fault types, boundary values, batch detection |
+| `test_energy_accumulation.py` | 13 | Tick accumulation, paused state, elapsed time handling |
+| `test_building.py` | 47 | PanelDefinition construction, PanelState, registry helpers |
+| `test_maintenance.py` | 62 | Full queue lifecycle — add, acknowledge, note, resolve, filter, export |
+| `test_demo_mode.py` | 38 | DemoState, step advancement, reset, build_demo_steps output |
+| `test_report_generator.py` | 38 | CSV structure, disclaimer rows, 18-column schema, edge cases |
+| `test_building_config.py` | 50 | distribute_panels round-robin, active_floors, MIN/MAX bounds |
+| **Total** | **333** | |
+
+---
+
+## Interview Defence Notes
+
+**Why keep EE logic out of `app.py`?**
+Streamlit reruns the entire script on every widget interaction. If formulas lived
+in `app.py`, they'd be harder to unit-test (you'd need to mock the Streamlit
+context) and harder to reuse elsewhere. Pure functions in separate modules are
+testable, portable, and reviewable in isolation.
+
+**Why a pending/Apply pattern for floor changes?**
+Streamlit's `number_input` fires on every keypress. Without a confirmation gate,
+incrementing the floor count from 12 to 13 would immediately destroy an in-progress
+maintenance demo. The Apply button gives the operator a deliberate confirmation
+step — standard practice in SCADA and HMI design.
+
+**How does energy accumulation work without a real clock?**
+`accumulate_energy_tick()` in `calculations.py` records `time.monotonic()` on each
+tick and computes `Δt = current_tick − last_tick`. This turns the discrete
+auto-rerun loop into a numeric integration: E += P × Δt / 3 600 000. The result is
+in kWh and is as accurate as the OS scheduler allows.
+
+**What makes the fault detection stateless?**
+`detect_faults_batch()` in `fault_detector.py` takes a list of readings and a
+thresholds dict and returns a list of `FaultEvent` objects — no global state, no
+side effects. This means the same function works identically for the single-panel
+bus and every panel in the building simulator without any modification.
+
+---
+
+## License
+
+MIT — see `LICENSE` if present, otherwise treat as open for educational/portfolio use.

@@ -139,13 +139,16 @@ if "active_num_floors" not in st.session_state:
     st.session_state.active_num_floors = settings["num_floors"]
 
 # ---------------------------------------------------------------------------
-# Floor configuration change detection
+# Floor configuration change detection (Apply-button gated)
+#
+# The sidebar returns ``settings["apply_floors"] = True`` only when the user
+# has *both* changed the number input away from the active value *and* clicked
+# the "✅ Apply Configuration" button.  An accidental nudge of the number input
+# alone no longer triggers a reset.
 # ---------------------------------------------------------------------------
 
-_requested_floors = settings["num_floors"]
-_active_floors    = st.session_state.active_num_floors
-
-if _requested_floors != _active_floors:
+if settings["apply_floors"]:
+    _requested_floors = settings["pending_num_floors"]
     # Distribute panels across the new floor count and rebuild the simulator.
     _new_panels = distribute_panels(config.BUILDING_PANELS, _requested_floors)
     st.session_state.building_sim  = BuildingSimulator(_new_panels)
@@ -160,7 +163,7 @@ if _requested_floors != _active_floors:
     if st.session_state.selected_panel not in st.session_state.building_sim.registry:
         st.session_state.selected_panel = _new_demo_pid
     st.session_state.active_num_floors = _requested_floors
-    st.info(
+    st.success(
         f"🏢 Building reconfigured to **{_requested_floors} floor(s)**. "
         "Simulation and maintenance queue have been reset. "
         "Persistent fault log is preserved."
