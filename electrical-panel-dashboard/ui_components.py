@@ -423,3 +423,314 @@ def sidebar_controls() -> dict:
         "clear_log":        clear_log_clicked,
         "thresholds":       thresholds,
     }
+
+
+# ===========================================================================
+# Building-wide UI components
+# Added for the building-wide monitoring upgrade.
+# All functions below are pure renderers — no electrical logic.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Panel status card (building overview grid)
+# ---------------------------------------------------------------------------
+
+def panel_status_card(panel_id: str, location: str, floor: int,
+                      status: str, p_kw: float, pf: float,
+                      energy_kwh_val: float, injected: bool = False) -> None:
+    """
+    Render a compact status card for one panel in the building overview grid.
+
+    Args:
+        panel_id:       e.g. "P-07"
+        location:       descriptive name
+        floor:          floor number
+        status:         "NORMAL", "WARNING", or "FAULT"
+        p_kw:           total real power (kW)
+        pf:             aggregate power factor
+        energy_kwh_val: accumulated energy (kWh)
+        injected:       True when an active manual fault injection is present
+    """
+    color = status_color(status)
+    badge = (
+        '<span style="font-size:10px;background:#5b2d8e;color:#e8eaf0;'
+        'border-radius:3px;padding:1px 5px;margin-left:6px;">INJECTED</span>'
+        if injected else ""
+    )
+    st.markdown(
+        f"""
+        <div style="border-left:4px solid {color};background:#1e2433;
+                    border-radius:6px;padding:8px 12px;margin:3px 0;">
+            <p style="margin:0;font-size:12px;font-weight:700;color:#e8eaf0;">
+                {panel_id}{badge}
+            </p>
+            <p style="margin:1px 0;font-size:10px;color:#8892a4;">
+                Floor {floor} · {location}
+            </p>
+            <p style="margin:2px 0;font-size:11px;color:{color};font-weight:600;">
+                {status}
+            </p>
+            <p style="margin:1px 0;font-size:10px;color:#8892a4;">
+                {p_kw:.1f} kW · PF {pf:.3f} · {energy_kwh_val:.3f} kWh
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Floor grid chart (Plotly scatter — floor vs. panel position)
+# ---------------------------------------------------------------------------
+
+def floor_grid_chart(panel_summaries: list) -> "go.Figure":
+    """
+    Return a Plotly scatter chart showing panel status by floor.
+
+    Each panel is a circle marker; color encodes status (green/amber/red).
+    X axis = position within floor; Y axis = floor number.
+
+    Args:
+        panel_summaries: list of dicts with keys panel_id, floor, location,
+                         status, p_total_kw, pf_agg, injected.
+
+    Returns:
+        plotly.graph_objects.Figure
+    """
+    # Group by floor to assign x-positions within each floor.
+    from collections import defaultdict
+    floor_counts: "defaultdict[int, int]" = defaultdict(int)
+    xs, ys, colors_list, texts, sizes = [], [], [], [], []
+
+    for row in panel_summaries:
+        fl = row["floor"]
+        floor_counts[fl] += 1
+        x = floor_counts[fl]
+        xs.append(x)
+        ys.append(fl)
+        colors_list.append(status_color(row["status"]))
+        badge = " ⚡" if row.get("injected") else ""
+        texts.append(
+            f"<b>{row['panel_id']}{badge}</b><br>"
+            f"{row['location']}<br>"
+            f"Floor {fl}<br>"
+            f"Status: {row['status']}<br>"
+            f"P: {row['p_total_kw']:.1f} kW | PF: {row['pf_agg']:.3f}"
+        )
+        sizes.append(22 if row["status"] == "FAULT" else 16)
+
+    fig = go.Figure(go.Scatter(
+        x=xs,
+        y=ys,
+        mode="markers+text",
+        marker=dict(color=colors_list, size=sizes, line=dict(width=1, color="#2a3040")),
+        text=[r["panel_id"] for r in panel_summaries],
+        textposition="top center",
+        textfont=dict(color="#e8eaf0", size=9),
+        hovertext=texts,
+        hoverinfo="text",
+    ))
+    fig.update_layout(
+        title=dict(text="Building Panel Status by Floor", font=dict(size=14, color="#e8eaf0"), x=0.01),
+        xaxis=dict(title="Panel (left to right per floor)", showgrid=False,
+                   tickfont=dict(color="#8892a4", size=9), zeroline=False),
+        yaxis=dict(title="Floor", tickmode="linear", tick0=1, dtick=1,
+                   tickfont=dict(color="#8892a4", size=10), gridcolor="#2a3040"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(13,17,23,0.6)",
+        margin=dict(t=40, b=40, l=60, r=20),
+        height=420,
+        template=config.PLOTLY_THEME,
+        showlegend=False,
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Maintenance priority table
+# ---------------------------------------------------------------------------
+
+def maintenance_table(items: list) -> None:
+    """
+    Render a styled maintenance priority table.
+
+    HIGH rows: red background; MEDIUM rows: amber; LOW rows: muted.
+
+    Args:
+        items: list of MaintenanceItem objects (or dicts via .to_dict()).
+    """
+    if not items:
+        st.info("No maintenance items in queue.")
+        return
+
+    import pandas as pd
+
+    rows = [i.to_dict() if hasattr(i, "to_dict") else i for i in items]
+    df = pd.DataFrame(rows)
+
+    display_cols = [
+        "panel_id", "floor", "fault_category", "severity",
+        "measured_value", "unit", "priority", "workflow_status",
+        "first_detected", "latest_detected", "notes",
+    ]
+    df = df[[c for c in display_cols if c in df.columns]]
+
+    def _row_style(row: "pd.Series") -> list:
+        p = row.get("priority", "")
+        if p == "HIGH":
+            return ["background-color:#3d1a1a;color:#ff6b6b"] * len(row)
+        if p == "MEDIUM":
+            return ["background-color:#3d2e0a;color:#ffa500"] * len(row)
+        return ["background-color:#1e2433;color:#8892a4"] * len(row)
+
+    styled = df.style.apply(_row_style, axis=1)
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# Building summary metric row
+# ---------------------------------------------------------------------------
+
+def building_summary_metrics(summary: dict) -> None:
+    """
+    Render a four-column metric row for the building overview header.
+
+    Args:
+        summary: dict with keys total, normal, warning, fault.
+    """
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        metric_card("Monitored Panels", str(summary["total"]), "panels")
+    with c2:
+        metric_card("Normal", str(summary["normal"]), "panels", status="OK")
+    with c3:
+        status = "WARNING" if summary["warning"] > 0 else "OK"
+        metric_card("Warning", str(summary["warning"]), "panels", status=status)
+    with c4:
+        status = "FAULT" if summary["fault"] > 0 else "OK"
+        metric_card("Fault", str(summary["fault"]), "panels", status=status)
+
+
+# ---------------------------------------------------------------------------
+# Analytics charts
+# ---------------------------------------------------------------------------
+
+def analytics_faults_by_category(fault_df: "pd.DataFrame") -> "go.Figure":
+    """
+    Bar chart of fault event counts grouped by parameter (category).
+
+    Args:
+        fault_df: DataFrame loaded from logger.load_recent() or full log.
+
+    Returns:
+        go.Figure
+    """
+    if fault_df.empty:
+        return go.Figure()
+    counts = fault_df["parameter"].value_counts().reset_index()
+    counts.columns = ["category", "count"]
+    fig = go.Figure(go.Bar(
+        x=counts["category"],
+        y=counts["count"],
+        marker_color=["#4e9af1", "#f39c12", "#2ecc71"][:len(counts)],
+        text=counts["count"],
+        textposition="outside",
+        textfont=dict(color="#e8eaf0"),
+    ))
+    fig.update_layout(
+        title=dict(text="Fault Events by Category (SIMULATED DATA)", font=dict(size=13, color="#e8eaf0"), x=0.01),
+        xaxis=dict(tickfont=dict(color="#e8eaf0")),
+        yaxis=dict(title="Count", tickfont=dict(color="#8892a4"), gridcolor="#2a3040"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(13,17,23,0.6)",
+        height=280,
+        margin=dict(t=40, b=30, l=50, r=20),
+        template=config.PLOTLY_THEME,
+    )
+    return fig
+
+
+def analytics_faults_by_panel(fault_df: "pd.DataFrame") -> "go.Figure":
+    """
+    Horizontal bar chart of fault event counts grouped by panel (circuit prefix).
+
+    Args:
+        fault_df: DataFrame from logger.load_recent().
+
+    Returns:
+        go.Figure
+    """
+    if fault_df.empty:
+        return go.Figure()
+    # Extract panel_id from circuit field (format: "P-07/Phase-A" or legacy "Phase-A")
+    fault_df = fault_df.copy()
+    fault_df["panel"] = fault_df["circuit"].str.split("/").str[0]
+    counts = fault_df["panel"].value_counts().reset_index()
+    counts.columns = ["panel", "count"]
+    counts = counts.sort_values("count", ascending=True)
+
+    fig = go.Figure(go.Bar(
+        x=counts["count"],
+        y=counts["panel"],
+        orientation="h",
+        marker_color="#e74c3c",
+        text=counts["count"],
+        textposition="outside",
+        textfont=dict(color="#e8eaf0"),
+    ))
+    fig.update_layout(
+        title=dict(text="Fault Events by Panel (SIMULATED DATA)", font=dict(size=13, color="#e8eaf0"), x=0.01),
+        xaxis=dict(title="Count", tickfont=dict(color="#8892a4"), gridcolor="#2a3040"),
+        yaxis=dict(tickfont=dict(color="#e8eaf0")),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(13,17,23,0.6)",
+        height=max(200, 30 * len(counts) + 60),
+        margin=dict(t=40, b=30, l=80, r=50),
+        template=config.PLOTLY_THEME,
+    )
+    return fig
+
+
+def analytics_fault_trend(fault_df: "pd.DataFrame") -> "go.Figure":
+    """
+    Time-series line chart of cumulative fault events.
+
+    Args:
+        fault_df: DataFrame from logger.load_recent() with timestamp column.
+
+    Returns:
+        go.Figure
+    """
+    if fault_df.empty or "timestamp" not in fault_df.columns:
+        return go.Figure()
+
+    import pandas as pd
+
+    df = fault_df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    df["cumulative"] = range(1, len(df) + 1)
+
+    fig = go.Figure(go.Scatter(
+        x=df["timestamp"],
+        y=df["cumulative"],
+        mode="lines",
+        line=dict(color="#4e9af1", width=2),
+        fill="tozeroy",
+        fillcolor="rgba(78,154,241,0.1)",
+    ))
+    fig.update_layout(
+        title=dict(
+            text="Cumulative Fault Events Over Time (SIMULATED DATA)",
+            font=dict(size=13, color="#e8eaf0"),
+            x=0.01,
+        ),
+        xaxis=dict(tickfont=dict(color="#8892a4", size=9), showgrid=False),
+        yaxis=dict(title="Cumulative Events", tickfont=dict(color="#8892a4"), gridcolor="#2a3040"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(13,17,23,0.6)",
+        height=260,
+        margin=dict(t=40, b=30, l=60, r=20),
+        template=config.PLOTLY_THEME,
+    )
+    return fig

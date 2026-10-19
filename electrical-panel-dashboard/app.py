@@ -1,13 +1,17 @@
 """
-app.py — Streamlit entry point for the Electrical Panel Monitoring Dashboard.
+app.py — Streamlit entry point for PanelWatch.
 
-This file contains no business logic.  It orchestrates calls to:
-    config          — constants and circuit definitions
-    simulator       — generate_phase_readings, generate_circuit_readings, SimulatorHistory
-    calculations    — EE formula functions
-    fault_detector  — detect_faults_batch
-    logger          — append_faults, load_recent, clear_log, fault_counts
-    ui_components   — all Streamlit/Plotly widget builders
+Tabs
+----
+0  Building Overview     — 20-panel status grid, floor map, panel selector
+1  ⚡ 3-Phase Bus         — existing single-panel 3-phase monitoring (unchanged)
+2  🔌 Circuit Breakdown   — existing 8-circuit breakdown (unchanged)
+3  🔧 Fault Simulation    — interactive fault injection + Richie's demo scenario
+4  🛠  Maintenance Queue   — priority queue, acknowledge, notes, resolve
+5  📊 Analytics           — fault trend charts from the persistent log
+6  🚨 Fault Log           — existing raw fault event table (unchanged)
+
+All orchestration only — no business logic in this file.
 """
 
 import time
@@ -17,6 +21,8 @@ import pandas as pd
 import streamlit as st
 
 import config
+from building import building_summary
+from building_simulator import BuildingSimulator
 from calculations import (
     accumulate_energy_tick,
     apparent_power,
@@ -28,11 +34,19 @@ from calculations import (
 )
 from fault_detector import detect_faults_batch
 from logger import append_faults, clear_log, fault_counts, load_recent
+from maintenance import MaintenanceQueue
 from simulator import SimulatorHistory, generate_circuit_readings, generate_phase_readings
 from ui_components import (
+    analytics_fault_trend,
+    analytics_faults_by_category,
+    analytics_faults_by_panel,
+    building_summary_metrics,
     circuit_bar_chart,
     fault_log_table,
+    floor_grid_chart,
+    maintenance_table,
     metric_card,
+    panel_status_card,
     phase_gauge,
     sidebar_controls,
     trend_chart,
@@ -43,13 +57,12 @@ from ui_components import (
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Electrical Panel Monitor",
+    page_title="PanelWatch — Building Monitor",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Global CSS — dark engineering theme
 st.markdown(
     """
     <style>
@@ -58,8 +71,8 @@ st.markdown(
         header     { visibility: hidden; }
         body, .stApp { background-color: #0d1117; }
         .stTabs [data-baseweb="tab"] {
-            font-size: 15px;
-            padding: 8px 20px;
+            font-size: 14px;
+            padding: 6px 16px;
             color: #8892a4;
         }
         .stTabs [aria-selected="true"] {
@@ -86,6 +99,7 @@ if settings["clear_log"]:
 # Session state initialisation (first run only)
 # ---------------------------------------------------------------------------
 
+# ── Single-panel state (existing) ──────────────────────────────────────────
 if "history" not in st.session_state:
     st.session_state.history = SimulatorHistory(maxlen=settings["history_window"])
 if "energy_kwh" not in st.session_state:
@@ -96,29 +110,37 @@ if "latest_phase" not in st.session_state:
     st.session_state.latest_phase = None
 if "latest_circuits" not in st.session_state:
     st.session_state.latest_circuits = []
-# Monotonic timestamp of the last completed live simulation tick.
-# None on first run so we do not accumulate energy for an unknown interval.
 if "last_tick_time" not in st.session_state:
     st.session_state.last_tick_time = None
+
+# ── Building-wide state (new) ───────────────────────────────────────────────
+if "building_sim" not in st.session_state:
+    st.session_state.building_sim = BuildingSimulator()
+if "maint_queue" not in st.session_state:
+    st.session_state.maint_queue = MaintenanceQueue()
+if "selected_panel" not in st.session_state:
+    st.session_state.selected_panel = "P-01"
+if "demo_step" not in st.session_state:
+    st.session_state.demo_step = 0   # tracks Richie's demo scenario step
 
 # ---------------------------------------------------------------------------
 # Page header
 # ---------------------------------------------------------------------------
 
-st.title("⚡ Electrical Panel Monitoring Dashboard")
+st.title("⚡ PanelWatch — Building Electrical Monitoring")
 st.caption(
-    "📍 Main Distribution Panel — 277/480 V 3Φ | 60 Hz  "
+    "📍 Commercial Building · 12 Floors · 20 Panels · 277/480 V 3Φ | 60 Hz  "
     "| ⚠️ **SIMULATED DATA** — not from real sensors or hardware"
 )
 
 # ---------------------------------------------------------------------------
-# Data generation
+# Single-panel data generation (existing logic — untouched)
 # ---------------------------------------------------------------------------
 
 if not settings["pause_simulation"]:
-    now = datetime.now()
-    phase_reading    = generate_phase_readings(now)
-    circuit_readings = generate_circuit_readings(now)
+    _now = datetime.now()
+    phase_reading    = generate_phase_readings(_now)
+    circuit_readings = generate_circuit_readings(_now)
     st.session_state.latest_phase    = phase_reading
     st.session_state.latest_circuits = circuit_readings
 else:
@@ -126,50 +148,42 @@ else:
     phase_reading    = st.session_state.latest_phase
     circuit_readings = st.session_state.latest_circuits
 
-# Guard: nothing to show on first paused run
 if phase_reading is None or not circuit_readings:
     st.info("Waiting for first reading…")
     time.sleep(1)
     st.rerun()
 
 # ---------------------------------------------------------------------------
-# Calculations
+# Single-panel calculations (existing — untouched)
 # ---------------------------------------------------------------------------
 
-# Per-phase derived quantities
-phases = [
+_phases = [
     ("A", "phase_A_V", "phase_A_I", "phase_A_PF"),
     ("B", "phase_B_V", "phase_B_I", "phase_B_PF"),
     ("C", "phase_C_V", "phase_C_I", "phase_C_PF"),
 ]
 
-phase_data: dict[str, dict] = {}
-for label, vk, ik, pfk in phases:
-    V   = phase_reading[vk]
-    I   = phase_reading[ik]
-    pf  = phase_reading[pfk]
-    S   = apparent_power(V, I)
-    P   = real_power(V, I, pf)
-    Q   = reactive_power(P, S)
-    dev = voltage_deviation_pct(V, config.V_LINE_TO_NEUTRAL)
-    phase_data[label] = {"V": V, "I": I, "pf": pf, "S": S, "P": P, "Q": Q, "dev": dev}
+phase_data: dict = {}
+for _label, _vk, _ik, _pfk in _phases:
+    _V   = phase_reading[_vk]
+    _I   = phase_reading[_ik]
+    _pf  = phase_reading[_pfk]
+    _S   = apparent_power(_V, _I)
+    _P   = real_power(_V, _I, _pf)
+    _Q   = reactive_power(_P, _S)
+    _dev = voltage_deviation_pct(_V, config.V_LINE_TO_NEUTRAL)
+    phase_data[_label] = {"V": _V, "I": _I, "pf": _pf, "S": _S, "P": _P, "Q": _Q, "dev": _dev}
 
-# 3-phase bus totals — per-phase summation (accurate for unbalanced loads).
-# three_phase_power() is kept available for reference and comparison but is
-# not used for displayed values.
 bus_totals = sum_phase_power([
     (phase_data["A"]["V"], phase_data["A"]["I"], phase_data["A"]["pf"]),
     (phase_data["B"]["V"], phase_data["B"]["I"], phase_data["B"]["pf"]),
     (phase_data["C"]["V"], phase_data["C"]["I"], phase_data["C"]["pf"]),
 ])
-total_P_W  = bus_totals["P_total"]
-total_S_VA = bus_totals["S_total"]
+total_P_W   = bus_totals["P_total"]
+total_S_VA  = bus_totals["S_total"]
 total_Q_VAR = bus_totals["Q_total"]
-agg_pf     = bus_totals["PF_agg"]
+agg_pf      = bus_totals["PF_agg"]
 
-# Energy accumulation — delegates to calculations.accumulate_energy_tick()
-# so that unit tests exercise the identical production code path.
-# See that function's docstring for full assumptions and algorithm details.
 st.session_state.energy_kwh, st.session_state.last_tick_time = (
     accumulate_energy_tick(
         energy_kwh_current=st.session_state.energy_kwh,
@@ -180,81 +194,214 @@ st.session_state.energy_kwh, st.session_state.last_tick_time = (
     )
 )
 
-# Per-circuit load %
-for cr in circuit_readings:
-    cr["load_pct"] = load_percentage(cr["current_A"], cr["rated_current_A"])
+for _cr in circuit_readings:
+    _cr["load_pct"] = load_percentage(_cr["current_A"], _cr["rated_current_A"])
 
 # ---------------------------------------------------------------------------
-# Fault detection
+# Single-panel fault detection (existing — untouched)
 # ---------------------------------------------------------------------------
 
-all_readings = [phase_reading] + circuit_readings
-new_faults   = detect_faults_batch(all_readings, settings["thresholds"], config.CIRCUITS)
+_all_readings = [phase_reading] + circuit_readings
+_new_faults   = detect_faults_batch(_all_readings, settings["thresholds"], config.CIRCUITS)
 
-if new_faults and not settings["pause_simulation"]:
-    append_faults(new_faults)
+if _new_faults and not settings["pause_simulation"]:
+    append_faults(_new_faults)
 
-# Helper: worst severity for a named circuit/phase in the current tick
+
 def _worst_status(name: str) -> str:
-    severities = [fe.severity for fe in new_faults if fe.circuit == name]
+    severities = [fe.severity for fe in _new_faults if fe.circuit == name]
     if "FAULT"   in severities:
         return "FAULT"
     if "WARNING" in severities:
         return "WARNING"
     return "OK"
 
-phase_status = {p: _worst_status(f"Phase-{p}") for p in "ABC"}
+
+phase_status   = {p: _worst_status(f"Phase-{p}") for p in "ABC"}
 circuit_status = {cr["circuit_name"]: _worst_status(cr["circuit_name"]) for cr in circuit_readings}
+
+# ---------------------------------------------------------------------------
+# Building-wide simulation step
+# ---------------------------------------------------------------------------
+
+if not settings["pause_simulation"]:
+    building_faults = st.session_state.building_sim.step(
+        paused=False,
+        thresholds=settings["thresholds"],
+    )
+    # Append building-wide faults to the persistent CSV log.
+    if building_faults:
+        append_faults(building_faults)
+    # Update maintenance queue.
+    st.session_state.maint_queue.update_from_fault_events(
+        building_faults,
+        st.session_state.building_sim.registry,
+    )
 
 # ---------------------------------------------------------------------------
 # Tab layout
 # ---------------------------------------------------------------------------
 
-tab1, tab2, tab3 = st.tabs(["⚡ 3-Phase Bus", "🔌 Circuit Breakdown", "🚨 Fault Log"])
+tab_overview, tab_bus, tab_circuits, tab_fault_sim, tab_maint, tab_analytics, tab_log = st.tabs([
+    "🏢 Building Overview",
+    "⚡ 3-Phase Bus",
+    "🔌 Circuit Breakdown",
+    "🔧 Fault Simulation",
+    "🛠️ Maintenance Queue",
+    "📊 Analytics",
+    "🚨 Fault Log",
+])
 
-# ── Tab 1 — 3-Phase Bus ────────────────────────────────────────────────────
-with tab1:
+# ── Tab 0 — Building Overview ───────────────────────────────────────────────
+with tab_overview:
+    bsim = st.session_state.building_sim
+    summaries = bsim.panel_summaries()
+    bsummary  = building_summary(bsim.registry)
 
-    # Row 1: phase gauges
+    building_summary_metrics(bsummary)
+    st.divider()
+
+    # Floor grid chart
+    st.plotly_chart(floor_grid_chart(summaries), use_container_width=True)
+    st.divider()
+
+    # Panel search / filter
+    st.subheader("Panel List")
+    search_term = st.text_input("Search panels (ID or location):", value="", key="panel_search")
+    floor_filter = st.selectbox(
+        "Filter by floor:", ["All"] + [str(f) for f in range(1, 13)], key="floor_filter"
+    )
+    status_filter = st.selectbox(
+        "Filter by status:", ["All", "NORMAL", "WARNING", "FAULT"], key="status_filter"
+    )
+
+    filtered = summaries
+    if search_term:
+        _lower = search_term.lower()
+        filtered = [
+            r for r in filtered
+            if _lower in r["panel_id"].lower() or _lower in r["location"].lower()
+        ]
+    if floor_filter != "All":
+        filtered = [r for r in filtered if r["floor"] == int(floor_filter)]
+    if status_filter != "All":
+        filtered = [r for r in filtered if r["status"] == status_filter]
+
+    st.caption(f"Showing {len(filtered)} of {len(summaries)} panels")
+
+    cols_per_row = 4
+    for row_start in range(0, len(filtered), cols_per_row):
+        row_cols = st.columns(cols_per_row)
+        for col, row in zip(row_cols, filtered[row_start:row_start + cols_per_row]):
+            with col:
+                panel_status_card(
+                    panel_id=row["panel_id"],
+                    location=row["location"],
+                    floor=row["floor"],
+                    status=row["status"],
+                    p_kw=row["p_total_kw"],
+                    pf=row["pf_agg"],
+                    energy_kwh_val=row["energy_kwh"],
+                    injected=row.get("injected", False),
+                )
+
+    st.divider()
+
+    # Individual panel detail
+    st.subheader("Panel Detail")
+    panel_ids = [r["panel_id"] for r in summaries]
+    sel_idx   = panel_ids.index(st.session_state.selected_panel) if st.session_state.selected_panel in panel_ids else 0
+    selected_id = st.selectbox("Select panel to inspect:", panel_ids, index=sel_idx, key="panel_detail_select")
+    st.session_state.selected_panel = selected_id
+
+    sel_state = bsim.registry[selected_id]
+    sel_defn  = sel_state.definition
+    sel_r     = sel_state.latest_reading
+
+    if sel_r is not None:
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        with dc1:
+            metric_card("Panel", sel_defn.full_label, "", status=sel_state.status)
+        with dc2:
+            metric_card("Real Power", f"{sel_r.p_total_w / 1000:.1f}", "kW", status=sel_state.status)
+        with dc3:
+            metric_card("Agg PF", f"{sel_r.pf_agg:.3f}", "PF", status=sel_state.status)
+        with dc4:
+            metric_card("Energy", f"{sel_state.energy_kwh:.4f}", "kWh")
+
+        hist = sel_state.history_as_lists()
+        if len(hist["timestamps"]) >= 2:
+            hist_df = pd.DataFrame(hist).set_index("timestamps")
+            col_v, col_i = st.columns(2)
+            with col_v:
+                fig_pv = trend_chart(
+                    df=hist_df,
+                    y_cols=["phase_a_v", "phase_b_v", "phase_c_v"],
+                    title=f"{selected_id} — Voltage Trend",
+                    y_label="Voltage (V)",
+                    colors=["#4e9af1", "#2ecc71", "#f39c12"],
+                    warning_value=sel_defn.v_line_to_neutral * 0.90,
+                    fault_value=sel_defn.v_line_to_neutral * 0.85,
+                )
+                st.plotly_chart(fig_pv, use_container_width=True)
+            with col_i:
+                fig_pi = trend_chart(
+                    df=hist_df,
+                    y_cols=["phase_a_i", "phase_b_i", "phase_c_i"],
+                    title=f"{selected_id} — Current Trend",
+                    y_label="Current (A)",
+                    colors=["#4e9af1", "#2ecc71", "#f39c12"],
+                    warning_value=sel_defn.phase_rated_current_a * 1.10,
+                    fault_value=sel_defn.phase_rated_current_a * 1.25,
+                )
+                st.plotly_chart(fig_pi, use_container_width=True)
+        else:
+            st.info("Collecting panel trend data…")
+    else:
+        st.info("Waiting for first reading from this panel…")
+
+# ── Tab 1 — 3-Phase Bus (EXISTING — UNTOUCHED) ─────────────────────────────
+with tab_bus:
+
     g1, g2, g3 = st.columns(3)
-    for col, phase_label, key in [(g1, "Phase A", "A"), (g2, "Phase B", "B"), (g3, "Phase C", "C")]:
-        pd_entry = phase_data[key]
-        fig = phase_gauge(
-            phase_label=phase_label,
-            V=pd_entry["V"],
-            I=pd_entry["I"],
-            pf=pd_entry["pf"],
-            status=phase_status[key],
+    for _col, _phase_label, _key in [(g1, "Phase A", "A"), (g2, "Phase B", "B"), (g3, "Phase C", "C")]:
+        _pd_entry = phase_data[_key]
+        _fig = phase_gauge(
+            phase_label=_phase_label,
+            V=_pd_entry["V"],
+            I=_pd_entry["I"],
+            pf=_pd_entry["pf"],
+            status=phase_status[_key],
         )
-        col.plotly_chart(fig, use_container_width=True)
+        _col.plotly_chart(_fig, use_container_width=True)
 
-    # Row 2: summary metrics
-    m1, m2, m3, m4 = st.columns(4)
-    worst_bus = max(
+    _m1, _m2, _m3, _m4 = st.columns(4)
+    _worst_bus = max(
         (phase_status[p] for p in "ABC"),
         key=lambda s: {"OK": 0, "WARNING": 1, "FAULT": 2}[s],
     )
-    with m1:
-        metric_card("Total Real Power", f"{total_P_W/1000:.1f}", "kW", status=worst_bus)
-    with m2:
-        metric_card("Total Apparent Power", f"{total_S_VA/1000:.1f}", "kVA", status=worst_bus)
-    with m3:
-        pf_status = "FAULT" if agg_pf < settings["thresholds"]["power_factor"]["fault"] \
-                   else "WARNING" if agg_pf < settings["thresholds"]["power_factor"]["warn"] \
-                   else "OK"
-        metric_card("Aggregate PF", f"{agg_pf:.3f}", "PF", status=pf_status)
-    with m4:
+    with _m1:
+        metric_card("Total Real Power", f"{total_P_W / 1000:.1f}", "kW", status=_worst_bus)
+    with _m2:
+        metric_card("Total Apparent Power", f"{total_S_VA / 1000:.1f}", "kVA", status=_worst_bus)
+    with _m3:
+        _pf_status = (
+            "FAULT" if agg_pf < settings["thresholds"]["power_factor"]["fault"]
+            else "WARNING" if agg_pf < settings["thresholds"]["power_factor"]["warn"]
+            else "OK"
+        )
+        metric_card("Aggregate PF", f"{agg_pf:.3f}", "PF", status=_pf_status)
+    with _m4:
         metric_card("Energy Consumed", f"{st.session_state.energy_kwh:.4f}", "kWh")
 
     st.divider()
 
-    # Row 3: trend charts
-    df_phase = st.session_state.history.phase_dataframe()
-    if len(df_phase) >= 2:
-        c_left, c_right = st.columns(2)
-        with c_left:
-            fig_v = trend_chart(
-                df=df_phase,
+    _df_phase = st.session_state.history.phase_dataframe()
+    if len(_df_phase) >= 2:
+        _cl, _cr = st.columns(2)
+        with _cl:
+            _fig_v = trend_chart(
+                df=_df_phase,
                 y_cols=["phase_A_V", "phase_B_V", "phase_C_V"],
                 title="Voltage Trend — All Phases",
                 y_label="Voltage (V)",
@@ -262,10 +409,10 @@ with tab1:
                 warning_value=config.V_LINE_TO_NEUTRAL * 0.90,
                 fault_value=config.V_LINE_TO_NEUTRAL * 0.85,
             )
-            st.plotly_chart(fig_v, use_container_width=True)
-        with c_right:
-            fig_i = trend_chart(
-                df=df_phase,
+            st.plotly_chart(_fig_v, use_container_width=True)
+        with _cr:
+            _fig_i = trend_chart(
+                df=_df_phase,
                 y_cols=["phase_A_I", "phase_B_I", "phase_C_I"],
                 title="Current Trend — All Phases",
                 y_label="Current (A)",
@@ -273,11 +420,10 @@ with tab1:
                 warning_value=config.PHASE_RATED_CURRENT_A * 1.10,
                 fault_value=config.PHASE_RATED_CURRENT_A * 1.25,
             )
-            st.plotly_chart(fig_i, use_container_width=True)
+            st.plotly_chart(_fig_i, use_container_width=True)
 
-        # Row 4: PF trend
-        fig_pf = trend_chart(
-            df=df_phase,
+        _fig_pf = trend_chart(
+            df=_df_phase,
             y_cols=["phase_A_PF", "phase_B_PF", "phase_C_PF"],
             title="Power Factor Trend — All Phases",
             y_label="Power Factor",
@@ -285,87 +431,309 @@ with tab1:
             warning_value=settings["thresholds"]["power_factor"]["warn"],
             fault_value=settings["thresholds"]["power_factor"]["fault"],
         )
-        st.plotly_chart(fig_pf, use_container_width=True)
+        st.plotly_chart(_fig_pf, use_container_width=True)
     else:
         st.info("Collecting trend data… charts appear after 2 readings.")
 
-# ── Tab 2 — Circuit Breakdown ──────────────────────────────────────────────
-with tab2:
+# ── Tab 2 — Circuit Breakdown (EXISTING — UNTOUCHED) ───────────────────────
+with tab_circuits:
 
-    circuit_summary = pd.DataFrame([
+    _circuit_summary = pd.DataFrame([
         {
-            "circuit_name": cr["circuit_name"],
-            "load_pct":     cr["load_pct"],
-            "status":       circuit_status[cr["circuit_name"]],
+            "circuit_name": _cr["circuit_name"],
+            "load_pct":     _cr["load_pct"],
+            "status":       circuit_status[_cr["circuit_name"]],
         }
-        for cr in circuit_readings
+        for _cr in circuit_readings
     ])
 
-    # Bar chart
-    st.plotly_chart(circuit_bar_chart(circuit_summary), use_container_width=True)
-
+    st.plotly_chart(circuit_bar_chart(_circuit_summary), use_container_width=True)
     st.divider()
 
-    # Metric card grid (4 per row × 2 rows)
     st.subheader("Circuit Status")
-    for row_start in range(0, len(circuit_readings), 4):
-        cols = st.columns(4)
-        for col, cr in zip(cols, circuit_readings[row_start:row_start + 4]):
-            cname  = cr["circuit_name"]
-            status = circuit_status[cname]
-            with col:
+    for _row_start in range(0, len(circuit_readings), 4):
+        _cols = st.columns(4)
+        for _col, _cr in zip(_cols, circuit_readings[_row_start:_row_start + 4]):
+            _cname  = _cr["circuit_name"]
+            _status = circuit_status[_cname]
+            with _col:
                 metric_card(
-                    label=cname,
-                    value=f"{cr['current_A']:.1f}",
+                    label=_cname,
+                    value=f"{_cr['current_A']:.1f}",
                     unit="A",
-                    status=status,
-                    delta=f"{cr['load_pct']:.1f}% load",
+                    status=_status,
+                    delta=f"{_cr['load_pct']:.1f}% load",
                 )
 
     st.divider()
 
-    # Per-circuit trend
     st.subheader("Circuit Current Trend")
-    circuit_names = [cr["circuit_name"] for cr in circuit_readings]
-    selected = st.selectbox("Select circuit:", circuit_names)
-    df_circ  = st.session_state.history.circuit_dataframe(selected)
-    if len(df_circ) >= 2:
-        # Look up rated current for this circuit
-        rated_i = next(
-            (c["rated_current_A"] for c in config.CIRCUITS if c["name"] == selected),
+    _circuit_names = [_cr["circuit_name"] for _cr in circuit_readings]
+    _selected_circuit = st.selectbox("Select circuit:", _circuit_names, key="circuit_trend_select")
+    _df_circ = st.session_state.history.circuit_dataframe(_selected_circuit)
+    if len(_df_circ) >= 2:
+        _rated_i = next(
+            (c["rated_current_A"] for c in config.CIRCUITS if c["name"] == _selected_circuit),
             30.0,
         )
-        fig_circ = trend_chart(
-            df=df_circ,
+        _fig_circ = trend_chart(
+            df=_df_circ,
             y_cols=["current_A"],
-            title=f"{selected} — Current Trend",
+            title=f"{_selected_circuit} — Current Trend",
             y_label="Current (A)",
             colors=["#4e9af1"],
-            warning_value=rated_i * 1.10,
-            fault_value=rated_i * 1.25,
+            warning_value=_rated_i * 1.10,
+            fault_value=_rated_i * 1.25,
         )
-        st.plotly_chart(fig_circ, use_container_width=True)
+        st.plotly_chart(_fig_circ, use_container_width=True)
     else:
         st.info("Collecting circuit trend data…")
 
-# ── Tab 3 — Fault Log ──────────────────────────────────────────────────────
-with tab3:
+# ── Tab 3 — Fault Simulation ────────────────────────────────────────────────
+with tab_fault_sim:
+    st.subheader("🔧 Fault Simulation Control Center")
+    st.caption("⚠️ SIMULATED faults only — this does not affect real electrical equipment.")
 
-    counts = fault_counts()
-    fc1, fc2, fc3 = st.columns(3)
-    with fc1:
-        metric_card("Total Events (all time)", str(counts["total"]), "events")
-    with fc2:
-        metric_card("FAULT Events", str(counts["FAULT"]), "", status="FAULT" if counts["FAULT"] else "OK")
-    with fc3:
-        metric_card("WARNING Events", str(counts["WARNING"]), "", status="WARNING" if counts["WARNING"] else "OK")
+    bsim_ref = st.session_state.building_sim
+
+    # --- Manual injection ---
+    st.markdown("#### Manual Fault Injection")
+    inj_col1, inj_col2, inj_col3 = st.columns(3)
+    with inj_col1:
+        inj_panel = st.selectbox(
+            "Target panel:",
+            [p["panel_id"] for p in config.BUILDING_PANELS],
+            key="inj_panel",
+        )
+    with inj_col2:
+        inj_scenario = st.selectbox(
+            "Fault scenario:",
+            ["overcurrent", "undervoltage", "low_power_factor"],
+            key="inj_scenario",
+        )
+    with inj_col3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("💥 Inject Fault", use_container_width=True, key="btn_inject"):
+            bsim_ref.inject_fault(inj_panel, inj_scenario)
+            st.success(f"Injected {inj_scenario} into {inj_panel}. Next tick will show the fault.")
+
+    if st.button("🔄 Clear All Injected Faults", key="btn_clear_inject"):
+        bsim_ref.clear_all_injections()
+        st.success("All injected faults cleared. Panels returning to normal simulation.")
+
+    # Show currently active injections.
+    active_injections = [
+        (pid, ps.injected_scenario)
+        for pid, ps in bsim_ref.registry.items()
+        if ps.injected_scenario is not None
+    ]
+    if active_injections:
+        st.markdown("**Active injections:**")
+        for pid, sc in active_injections:
+            st.markdown(f"- **{pid}** → `{sc}`")
+    else:
+        st.info("No active fault injections.")
+
+    st.divider()
+
+    # --- Richie's Demo Scenario ---
+    st.markdown("#### 🎬 Richie's Maintenance Scenario (Guided Demo)")
+    st.markdown(
+        """
+        This repeatable scenario demonstrates the full monitoring workflow:
+        1. Start with all panels operating normally.
+        2. Inject an overcurrent fault into **P-07** (Floor 5, Laboratory Suite A).
+        3. Observe the fault on the Building Overview.
+        4. View the Maintenance Queue update.
+        5. Acknowledge the alert and add a note.
+        6. Clear the fault and restore normal operation.
+        7. Confirm the event remains in the Maintenance Queue history.
+        """
+    )
+
+    demo_step = st.session_state.demo_step
+    demo_labels = [
+        "Step 1 — Clear all faults and start fresh",
+        "Step 2 — Inject overcurrent on P-07 (Floor 5)",
+        "Step 3 — Fault active: check Building Overview + Maintenance Queue",
+        "Step 4 — Acknowledge alert in Maintenance Queue tab",
+        "Step 5 — Clear the injection (restore normal operation)",
+        "Step 6 — Demo complete: check Maintenance Queue history",
+    ]
+    st.info(f"**Current step ({demo_step + 1}/6):** {demo_labels[demo_step]}")
+
+    demo_btns = st.columns(3)
+    with demo_btns[0]:
+        if st.button("▶ Next demo step", key="demo_next"):
+            if demo_step == 0:
+                bsim_ref.clear_all_injections()
+                st.success("All faults cleared. Dashboard reset.")
+            elif demo_step == 1:
+                bsim_ref.inject_fault("P-07", "overcurrent")
+                st.success("Overcurrent injected on P-07. Check Building Overview.")
+            elif demo_step == 2:
+                st.info("Navigate to 🏢 Building Overview or 🛠️ Maintenance Queue to see the fault.")
+            elif demo_step == 3:
+                st.info("Go to the 🛠️ Maintenance Queue tab, find P-07 and click Acknowledge.")
+            elif demo_step == 4:
+                bsim_ref.clear_injection("P-07")
+                st.success("P-07 fault injection cleared. Electrical condition normalising.")
+            elif demo_step == 5:
+                st.success("Demo complete! The event remains in the Maintenance Queue (LOW priority).")
+            st.session_state.demo_step = min(demo_step + 1, 5)
+
+    with demo_btns[1]:
+        if st.button("⏮ Reset demo", key="demo_reset"):
+            bsim_ref.clear_all_injections()
+            st.session_state.demo_step = 0
+            st.success("Demo reset.")
+
+# ── Tab 4 — Maintenance Queue ───────────────────────────────────────────────
+with tab_maint:
+    st.subheader("🛠️ Maintenance Priority Queue")
+    st.caption(
+        "Prioritisation is rule-based (FAULT=HIGH, WARNING=MEDIUM, Resolved=LOW). "
+        "This is a decision-support tool — not a certified safety assessment."
+    )
+
+    mq = st.session_state.maint_queue
+
+    # Summary counts
+    mc = mq.counts()
+    mcc1, mcc2, mcc3, mcc4 = st.columns(4)
+    with mcc1:
+        metric_card("Total Items", str(mc["total"]), "")
+    with mcc2:
+        metric_card("HIGH Priority", str(mc["HIGH"]), "", status="FAULT" if mc["HIGH"] else "OK")
+    with mcc3:
+        metric_card("MEDIUM Priority", str(mc["MEDIUM"]), "", status="WARNING" if mc["MEDIUM"] else "OK")
+    with mcc4:
+        metric_card("LOW (Resolved)", str(mc["LOW"]), "")
+
+    st.divider()
+
+    # Filters
+    mf1, mf2, mf3, mf4 = st.columns(4)
+    with mf1:
+        mf_floor = st.selectbox("Floor:", ["All"] + [str(f) for f in range(1, 13)], key="mf_floor")
+    with mf2:
+        mf_panel = st.selectbox(
+            "Panel:", ["All"] + [p["panel_id"] for p in config.BUILDING_PANELS], key="mf_panel"
+        )
+    with mf3:
+        mf_severity = st.selectbox("Severity:", ["All", "FAULT", "WARNING"], key="mf_severity")
+    with mf4:
+        mf_cat = st.selectbox("Category:", ["All", "voltage", "current", "power_factor"], key="mf_cat")
+
+    show_resolved = st.checkbox("Include resolved (LOW priority) items", value=True, key="mf_resolved")
+
+    filtered_items = mq.filter_items(
+        floor=int(mf_floor) if mf_floor != "All" else None,
+        panel_id=mf_panel if mf_panel != "All" else None,
+        severity=mf_severity if mf_severity != "All" else None,
+        fault_category=mf_cat if mf_cat != "All" else None,
+        include_resolved=show_resolved,
+    )
+    sorted_items = sorted(
+        filtered_items,
+        key=lambda i: ({"HIGH": 0, "MEDIUM": 1, "LOW": 2}.get(i.priority, 9), i.first_detected),
+    )
+
+    maintenance_table(sorted_items)
+
+    st.divider()
+    st.subheader("Acknowledge / Add Note")
+
+    all_item_ids = [i.item_id for i in mq.all_items()]
+    if all_item_ids:
+        ack_item_id = st.selectbox("Select item:", all_item_ids, key="ack_select")
+        ack_note = st.text_input("Add note (optional):", key="ack_note")
+        ac1, ac2, ac3 = st.columns(3)
+        with ac1:
+            if st.button("✅ Acknowledge", key="btn_ack"):
+                try:
+                    mq.acknowledge(ack_item_id)
+                    if ack_note.strip():
+                        mq.add_note(ack_item_id, ack_note.strip())
+                    st.success(f"Acknowledged {ack_item_id}.")
+                except KeyError as e:
+                    st.error(str(e))
+        with ac2:
+            if st.button("📋 Mark Reviewed", key="btn_reviewed"):
+                try:
+                    mq.mark_reviewed(ack_item_id)
+                    if ack_note.strip():
+                        mq.add_note(ack_item_id, ack_note.strip())
+                    st.success(f"Marked {ack_item_id} as reviewed.")
+                except KeyError as e:
+                    st.error(str(e))
+        with ac3:
+            if st.button("🗑️ Clear Resolved+Reviewed", key="btn_clear_resolved"):
+                removed = mq.clear_resolved()
+                st.success(f"Removed {removed} resolved+reviewed items.")
+    else:
+        st.info("No maintenance items yet.")
+
+# ── Tab 5 — Analytics ───────────────────────────────────────────────────────
+with tab_analytics:
+    st.subheader("📊 Maintenance Analytics")
+    st.caption("Based on persistent fault log. All data is SIMULATED.")
+
+    _fault_df = load_recent(500)
+
+    if _fault_df.empty:
+        st.info("No fault events recorded yet. Analytics will populate as faults are detected.")
+    else:
+        _total_events = len(_fault_df)
+        _fault_count  = (_fault_df["severity"] == "FAULT").sum() if "severity" in _fault_df.columns else 0
+        _warn_count   = (_fault_df["severity"] == "WARNING").sum() if "severity" in _fault_df.columns else 0
+
+        _a1, _a2, _a3 = st.columns(3)
+        with _a1:
+            metric_card("Total Events", str(_total_events), "")
+        with _a2:
+            metric_card("FAULT Events", str(_fault_count), "", status="FAULT" if _fault_count else "OK")
+        with _a3:
+            metric_card("WARNING Events", str(_warn_count), "", status="WARNING" if _warn_count else "OK")
+
+        st.divider()
+
+        _ac1, _ac2 = st.columns(2)
+        with _ac1:
+            st.plotly_chart(analytics_faults_by_category(_fault_df), use_container_width=True)
+        with _ac2:
+            st.plotly_chart(analytics_faults_by_panel(_fault_df), use_container_width=True)
+
+        st.plotly_chart(analytics_fault_trend(_fault_df), use_container_width=True)
+
+        st.divider()
+        st.markdown("**Export fault log as CSV:**")
+        _csv_data = _fault_df.to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download fault_log.csv",
+            data=_csv_data,
+            file_name="panelwatch_fault_log.csv",
+            mime="text/csv",
+        )
+
+# ── Tab 6 — Fault Log (EXISTING — UNTOUCHED) ───────────────────────────────
+with tab_log:
+
+    _counts = fault_counts()
+    _fc1, _fc2, _fc3 = st.columns(3)
+    with _fc1:
+        metric_card("Total Events (all time)", str(_counts["total"]), "events")
+    with _fc2:
+        metric_card("FAULT Events", str(_counts["FAULT"]), "", status="FAULT" if _counts["FAULT"] else "OK")
+    with _fc3:
+        metric_card("WARNING Events", str(_counts["WARNING"]), "", status="WARNING" if _counts["WARNING"] else "OK")
 
     st.divider()
     fault_log_table(load_recent(100))
     st.caption(f"Fault log persisted to: `{config.FAULT_LOG_PATH}`")
 
 # ---------------------------------------------------------------------------
-# Append to history + auto-rerun
+# Append to history + auto-rerun (existing — untouched)
 # ---------------------------------------------------------------------------
 
 if not settings["pause_simulation"]:

@@ -1,4 +1,4 @@
-﻿# PanelWatch — Electrical Panel Monitoring Dashboard
+# PanelWatch — Building Electrical Monitoring Dashboard
 
 > **All sensor readings are SIMULATED by a probabilistic noise model.**
 > This project does not interface with real electrical hardware or control any physical equipment.
@@ -9,18 +9,20 @@ Built for the **IBM Bob Hackathon 2026** by Ryan Whitehead.
 
 ## 1. Project Overview
 
-PanelWatch is a SCADA-style electrical panel monitoring dashboard built with **Streamlit**, **Plotly**, and **Python**. It simulates a 277/480 V 3-phase commercial electrical panel with eight configurable branch circuits, displays real-time power metrics, classifies faults by severity, and persists alarm events to a CSV log.
+PanelWatch is a building-wide SCADA-style electrical monitoring dashboard built with **Streamlit**, **Plotly**, and **Python**. It simulates **20 independent 277/480 V 3-phase panels** distributed across 12 floors of a commercial building, enabling a maintenance technician (Richie) to monitor the entire building's electrical health from a single screen.
 
 **Key features:**
 
-- 277/480 V 3-phase bus monitoring with per-phase summation power triangle (P, S, Q, PF)
-- 8 configurable branch circuits (HVAC, Lighting, Motor-1/2/3, Compressor, Receptacles, Emergency)
+- **Building Overview** — 20-panel status grid with floor filter, search, and status heat-map
+- **3-Phase Bus** — live per-phase voltage, current, power factor, and power triangle for a selected panel
+- **Circuit Breakdown** — 8 configurable branch circuits with load bars and trend charts
+- **Fault Simulation** — deterministic fault injection (overcurrent, undervoltage, low PF) per panel; includes a Richie's Demo scenario that walks through a realistic multi-panel incident
+- **Maintenance Queue** — rule-based priority queue (HIGH / MEDIUM / LOW) with acknowledge, notes, and resolve workflow
+- **Analytics** — fault trend, fault-by-category, and fault-by-panel charts from the persistent log
+- **Fault Log** — timestamped CSV log of every fault event, survives browser reloads
 - Accurate energy accumulation using monotonic elapsed-time measurement
 - Auto-refreshing SCADA-style dashboard via `st.rerun` loop (configurable interval)
-- Real-time fault classification with **WARNING** and **FAULT** severity levels
-- Persistent fault event log (CSV, row-capped) that survives browser reloads
-- Adjustable voltage, current, and power factor thresholds via sidebar sliders
-- Full pytest suite with pytest-cov HTML coverage report
+- 207-test pytest suite covering calculations, fault detection, building model, and maintenance queue
 
 ---
 
@@ -152,26 +154,53 @@ All thresholds are adjustable in real-time via sidebar sliders.
 
 ```
 electrical-panel-dashboard/
-+-- app.py                      Streamlit entry point
-+-- config.py                   Constants, thresholds, circuit definitions
-+-- simulator.py                Probabilistic sensor data generator (SIMULATED)
-+-- calculations.py             Pure EE math functions (no Streamlit dependency)
-+-- fault_detector.py           Stateless fault classification; FaultEvent dataclass
-+-- logger.py                   CSV fault log persistence with row cap
-+-- ui_components.py            Reusable Streamlit/Plotly widget builders
++-- app.py                       Streamlit entry point (7 tabs, building-wide)
++-- config.py                    Constants, thresholds, BUILDING_PANELS registry
++-- building.py                  PanelDefinition, PanelState, registry helpers
++-- building_simulator.py        BuildingSimulator — 20-panel independent sim engine
++-- maintenance.py               MaintenanceItem, MaintenanceQueue, priority rules
++-- simulator.py                 Single-panel probabilistic generator (SIMULATED)
++-- calculations.py              Pure EE math functions (no Streamlit dependency)
++-- fault_detector.py            Stateless fault classification; FaultEvent dataclass
++-- logger.py                    CSV fault log persistence with row cap
++-- ui_components.py             Reusable Streamlit/Plotly widget builders
 +-- data/
 |   +-- .gitkeep
 +-- tests/
-|   +-- test_calculations.py    Unit tests for EE formulas
-|   +-- test_fault_detector.py  Unit tests for fault classification
-+-- .coveragerc                 pytest-cov config
-+-- requirements.txt            Pinned dependencies
+|   +-- test_calculations.py     Unit tests for EE formulas (56 tests)
+|   +-- test_energy_accumulation.py  Unit tests for energy accumulation (13 tests)
+|   +-- test_fault_detector.py   Unit tests for fault classification (29 tests)
+|   +-- test_building.py         Unit tests for building model (47 tests)
+|   +-- test_maintenance.py      Unit tests for maintenance queue (62 tests)
++-- .coveragerc                  pytest-cov config
++-- ruff.toml                    Linter config (E/F/I rules, target py310)
++-- requirements.txt             Pinned dependencies
 +-- README.md
 ```
 
 ---
 
-## 10. Assumptions and Limitations
+## 10. Richie's Demo Walkthrough
+
+This walkthrough shows a first-time reviewer (or interviewer) the full building-monitoring workflow in under 5 minutes.
+
+1. **Open the app** — `streamlit run app.py` → **Building Overview** tab loads automatically.
+2. **Observe the grid** — 20 panel cards show NORMAL (green). Note the floor filter and search box.
+3. **Go to Fault Simulation tab** → expand **"Richie's Demo Scenario"** and click **"Run Richie's Demo"**.
+   - P-07 gets an OVERCURRENT injection; P-09 gets an UNDERVOLTAGE injection.
+   - Within one or two refresh ticks the Building Overview grid shows two FAULT cards.
+4. **Back to Building Overview** — filter by status = FAULT; only the two affected panels appear.
+5. **Click through to a FAULT panel's card** → the 3-Phase Bus tab shows the three phases all in the fault band.
+6. **Maintenance Queue tab** — two HIGH-priority items appear automatically (one per fault type per panel).
+   - Acknowledge P-07's overcurrent item; add a technician note (e.g. "Checked breaker, scheduling load review").
+7. **Click "Clear Injections"** in Fault Simulation — panels return to NORMAL after the next tick.
+8. **Back to Maintenance Queue** — items drop to LOW priority (resolved). Mark them as Reviewed, then Clear Resolved.
+9. **Analytics tab** — fault trend chart shows the spike; fault-by-category bar confirms "current" and "voltage" event counts.
+10. **Fault Log tab** — raw CSV rows show every event with timestamps.
+
+---
+
+## 11. Assumptions and Limitations
 
 1. **Sinusoidal steady-state** — formulas assume pure 60 Hz sinusoids; no harmonic distortion modeled.
 2. **Displacement PF only** — PF = cos(theta), not true power factor. VFDs and switching supplies produce harmonics that reduce true PF below displacement PF.
@@ -184,7 +213,7 @@ electrical-panel-dashboard/
 
 ---
 
-## 11. Interview Prep Notes
+## 12. Interview Prep Notes
 
 **Why sum per phase instead of using the balanced formula?**
 The balanced formula `P = sqrt(3) x V_LL x I_L x PF` assumes identical conditions on all three phases. The simulator adds independent Gaussian noise to each phase, creating small imbalances. Summing per-phase contributions (`P_total = P_A + P_B + P_C`) is always accurate regardless of load balance. Real power quality analyzers always use per-phase summation.
