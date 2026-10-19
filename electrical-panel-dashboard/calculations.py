@@ -262,12 +262,12 @@ def voltage_deviation_pct(V_actual: float, V_nominal: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Three-Phase Real Power
+# Three-Phase Real Power (balanced approximation)
 # ---------------------------------------------------------------------------
 
 def three_phase_power(V_line: float, I_line: float, pf: float) -> float:
     """
-    Calculate total 3-phase real power for a balanced system.
+    Calculate total 3-phase real power assuming a balanced, symmetrical load.
 
     Formula:  P = √3 × V_L × I_L × PF
 
@@ -290,6 +290,9 @@ def three_phase_power(V_line: float, I_line: float, pf: float) -> float:
         constant total power with a √3 multiplier on the line voltage and
         current product.  At 480 V, 200 A, PF = 0.90:
             P = 1.732 × 480 × 200 × 0.90 ≈ 149,731 W ≈ 149.7 kW.
+
+        This formula is an approximation valid only for balanced loads.  For
+        unbalanced systems use sum_phase_power() instead.
     """
     if V_line < 0:
         raise ValueError(f"Line voltage must be >= 0 V, got {V_line}")
@@ -298,3 +301,90 @@ def three_phase_power(V_line: float, I_line: float, pf: float) -> float:
     if not (0.0 <= pf <= 1.0):
         raise ValueError(f"Power factor must be in [0, 1], got {pf}")
     return math.sqrt(3.0) * V_line * I_line * pf
+
+
+# ---------------------------------------------------------------------------
+# Per-Phase Summation (unbalanced / exact)
+# ---------------------------------------------------------------------------
+
+def sum_phase_power(
+    phases: list[tuple[float, float, float]],
+) -> dict[str, float]:
+    """
+    Calculate aggregate 3-phase power by summing individual phase contributions.
+
+    This is the accurate method for unbalanced loads.  The simulator introduces
+    small per-phase variations via Gaussian noise, so this function is preferred
+    over the balanced approximation (three_phase_power) for dashboard totals.
+
+    Formula (per phase k):
+        S_k = V_k × I_k                (apparent power, VA)
+        P_k = V_k × I_k × PF_k        (real power, W)
+        Q_k = sqrt(S_k² − P_k²)       (reactive power, VAR — nonnegative convention)
+
+    Aggregates:
+        P_total = P_A + P_B + P_C      (W)
+        S_total = S_A + S_B + S_C      (VA)
+        Q_total = Q_A + Q_B + Q_C      (VAR)
+        PF_agg  = P_total / S_total    (dimensionless; 0.0 when S_total == 0)
+
+    Args:
+        phases: List of exactly three (V, I, PF) tuples, one per phase
+                (order: A, B, C).
+                    V   — RMS line-to-neutral voltage in volts (V), >= 0
+                    I   — RMS line current in amps (A), >= 0
+                    PF  — displacement power factor, dimensionless [0, 1]
+
+    Returns:
+        dict with keys:
+            "P_total"  — total real power (W)
+            "S_total"  — total apparent power (VA)
+            "Q_total"  — total reactive power (VAR, nonnegative)
+            "PF_agg"   — aggregate power factor = P_total / S_total
+
+    Raises:
+        ValueError: If phases does not contain exactly 3 tuples, or if any
+                    individual value fails the validation of the underlying
+                    real_power / apparent_power / reactive_power functions.
+
+    Assumptions:
+        • Sinusoidal steady-state — no harmonic distortion modeled.
+        • Reactive power is nonnegative (magnitude only).  The sign of Q
+          (lagging vs. leading) is not tracked because individual phase PF
+          angles are not available from the simulator.
+        • The aggregate PF is an equivalent single-number representation of
+          the combined load; it equals the true balanced-system PF only when
+          all three phases are identical.
+
+    Interview Note:
+        In a real unbalanced system (e.g. single-phase loads distributed across
+        phases, or a faulted phase), each phase may carry a different current
+        and present a different power factor.  Summing per-phase contributions
+        directly is more accurate than using average I and average PF in the
+        balanced formula, because the balanced formula implicitly assumes
+        V_A = V_B = V_C and I_A = I_B = I_C.  The error is small for slightly
+        unbalanced systems (< 1 %) but grows with imbalance.
+    """
+    if len(phases) != 3:
+        raise ValueError(f"Expected exactly 3 phase tuples, got {len(phases)}")
+
+    P_total = 0.0
+    S_total = 0.0
+    Q_total = 0.0
+
+    for V, I, pf in phases:
+        S_k = apparent_power(V, I)
+        P_k = real_power(V, I, pf)
+        Q_k = reactive_power(P_k, S_k)
+        P_total += P_k
+        S_total += S_k
+        Q_total += Q_k
+
+    PF_agg = P_total / S_total if S_total > 0.0 else 0.0
+
+    return {
+        "P_total": P_total,
+        "S_total": S_total,
+        "Q_total": Q_total,
+        "PF_agg":  PF_agg,
+    }

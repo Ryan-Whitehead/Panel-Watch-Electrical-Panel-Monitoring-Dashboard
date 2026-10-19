@@ -17,6 +17,7 @@ from calculations import (
     power_factor_from_angle,
     reactive_power,
     real_power,
+    sum_phase_power,
     three_phase_power,
     voltage_deviation_pct,
 )
@@ -224,3 +225,104 @@ class TestThreePhasePower:
     def test_pf_out_of_range_raises(self):
         with pytest.raises(ValueError):
             three_phase_power(480, 200, 1.1)
+
+
+# ---------------------------------------------------------------------------
+# sum_phase_power
+# ---------------------------------------------------------------------------
+
+class TestSumPhasePower:
+    """Tests for per-phase summation (sum_phase_power)."""
+
+    # --- helpers ---
+    BALANCED = [(277.0, 160.0, 0.88)] * 3   # identical phases
+
+    def test_balanced_p_total(self):
+        # P_total should equal 3 × (V × I × PF)
+        result = sum_phase_power(self.BALANCED)
+        expected_P = 3 * 277.0 * 160.0 * 0.88
+        assert result["P_total"] == pytest.approx(expected_P, rel=1e-6)
+
+    def test_balanced_s_total(self):
+        result = sum_phase_power(self.BALANCED)
+        expected_S = 3 * 277.0 * 160.0
+        assert result["S_total"] == pytest.approx(expected_S, rel=1e-6)
+
+    def test_balanced_pf_agg_equals_phase_pf(self):
+        # For identical phases PF_agg must equal the per-phase PF
+        result = sum_phase_power(self.BALANCED)
+        assert result["PF_agg"] == pytest.approx(0.88, rel=1e-6)
+
+    def test_power_triangle_identity_aggregate(self):
+        # P_total^2 + Q_total^2 is NOT necessarily equal to S_total^2 for
+        # summed phases (Q_total is sum of per-phase magnitudes, not vector sum),
+        # but each individual phase satisfies P_k^2 + Q_k^2 = S_k^2.
+        result = sum_phase_power(self.BALANCED)
+        P = result["P_total"] / 3
+        S = result["S_total"] / 3
+        Q = result["Q_total"] / 3
+        assert P**2 + Q**2 == pytest.approx(S**2, rel=1e-6)
+
+    def test_unbalanced_p_total(self):
+        # Phase A: heavy load; Phase B: light load; Phase C: nominal
+        phases = [
+            (277.0, 200.0, 0.90),   # Phase A — overcurrent
+            (277.0,  80.0, 0.95),   # Phase B — lightly loaded
+            (277.0, 160.0, 0.88),   # Phase C — nominal
+        ]
+        result = sum_phase_power(phases)
+        expected_P = (277*200*0.90) + (277*80*0.95) + (277*160*0.88)
+        assert result["P_total"] == pytest.approx(expected_P, rel=1e-6)
+
+    def test_unbalanced_pf_agg(self):
+        phases = [
+            (277.0, 200.0, 0.90),
+            (277.0,  80.0, 0.95),
+            (277.0, 160.0, 0.88),
+        ]
+        result = sum_phase_power(phases)
+        expected_P = (277*200*0.90) + (277*80*0.95) + (277*160*0.88)
+        expected_S = (277*200)      + (277*80)       + (277*160)
+        assert result["PF_agg"] == pytest.approx(expected_P / expected_S, rel=1e-6)
+
+    def test_zero_current_all_phases(self):
+        phases = [(277.0, 0.0, 0.88)] * 3
+        result = sum_phase_power(phases)
+        assert result["P_total"] == pytest.approx(0.0)
+        assert result["S_total"] == pytest.approx(0.0)
+        assert result["Q_total"] == pytest.approx(0.0)
+        assert result["PF_agg"]  == pytest.approx(0.0)   # S_total=0 → safe fallback
+
+    def test_unity_pf_all_phases(self):
+        phases = [(277.0, 160.0, 1.0)] * 3
+        result = sum_phase_power(phases)
+        assert result["Q_total"] == pytest.approx(0.0, abs=1e-6)
+        assert result["PF_agg"]  == pytest.approx(1.0, rel=1e-6)
+
+    def test_wrong_phase_count_raises(self):
+        with pytest.raises(ValueError):
+            sum_phase_power([(277.0, 160.0, 0.88)] * 2)
+
+    def test_wrong_phase_count_4_raises(self):
+        with pytest.raises(ValueError):
+            sum_phase_power([(277.0, 160.0, 0.88)] * 4)
+
+    def test_balanced_vs_three_phase_formula(self):
+        """
+        For a perfectly balanced load, sum_phase_power P_total should be close
+        to the balanced formula P = sqrt(3) * V_LL * I_L * PF.
+
+        V_LL = sqrt(3) * V_LN, so:
+            three_phase_power(sqrt(3)*277, 160, 0.88)
+            == sqrt(3) * sqrt(3)*277 * 160 * 0.88
+            == 3 * 277 * 160 * 0.88
+            == sum_phase_power([(277, 160, 0.88)] * 3)["P_total"]
+        """
+        V_LN = 277.0
+        I    = 160.0
+        PF   = 0.88
+        V_LL = math.sqrt(3) * V_LN
+
+        p_sum       = sum_phase_power([(V_LN, I, PF)] * 3)["P_total"]
+        p_balanced  = three_phase_power(V_LL, I, PF)
+        assert p_sum == pytest.approx(p_balanced, rel=1e-6)
